@@ -1,20 +1,25 @@
-# n8n + Playwright + utilitaires légers
-FROM n8nio/n8n:1.45.1
+# ------------------------------------------------------------
+# Naosite-Leads · Image n8n Community Edition (Alpine) + Playwright
+# ------------------------------------------------------------
+# - Base : n8nio/n8n:1.45.1 (Alpine)
+# - Ajouts : tzdata, wget, jq, bc  +  Playwright (Chromium)
+# - Taille finale ~100 Mo
+# ------------------------------------------------------------
 
-ENV TZ=Europe/Paris
-ENV DEBIAN_FRONTEND=noninteractive
+FROM n8nio/n8n:1.45.1       # Alpine par défaut
 
+# --- Paquets système + fuseau horaire ---
 USER root
+RUN apk add --no-cache tzdata wget jq bc \
+ && cp /usr/share/zoneinfo/Europe/Paris /etc/localtime \
+ && echo "Europe/Paris" > /etc/timezone
 
-# Installe les dépendances système
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends tzdata wget jq bc && \
-    rm -rf /var/lib/apt/lists/*
-
-# Installe Playwright et ses navigateurs
+# --- Installation Playwright + navigateurs ---
+USER node
+WORKDIR /home/node            # déjà dans l’image, mais on explicite
 RUN npx playwright install --with-deps chromium
 
-USER node
-WORKDIR /home/node
-
+# --- Port exposé par n8n ---
 EXPOSE 5678
+
+# CMD par défaut = point-d’entrée n8n fourni par l’image de base
