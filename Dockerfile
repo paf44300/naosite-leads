@@ -1,8 +1,7 @@
-# n8n Community · Debian + Playwright
-FROM n8nio/n8n:1.45.1-debian   # <-- variante Debian !
+# n8n Community – Debian + Playwright
+FROM n8nio/n8n:1.45.1-debian   # ← rien d’autre sur cette ligne
 
 USER root
-# paquets utilitaires + Playwright (navigateurs)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget jq bc tzdata \
  && npx --yes playwright install --with-deps chromium \
