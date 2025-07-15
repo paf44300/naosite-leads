@@ -1,26 +1,20 @@
-# Image n8n + playwright + tzdata
-# Utiliser une image n8n officielle comme base. Une version spécifique est recommandée.
-FROM n8nio/n8n:latest
+# n8n + Playwright + utilitaires légers
+FROM n8nio/n8n:1.45.1
 
-# Définir les variables d'environnement pour les installations non interactives et le fuseau horaire
 ENV TZ=Europe/Paris
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Passer root pour installer les paquets système
 USER root
+
+# Installe les dépendances système
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tzdata wget && \
+    apt-get install -y --no-install-recommends tzdata wget jq bc && \
     rm -rf /var/lib/apt/lists/*
 
-# Revenir à l'utilisateur 'node' pour les opérations n8n et npm
+# Installe Playwright et ses navigateurs
+RUN npx playwright install --with-deps chromium
+
 USER node
 WORKDIR /home/node
 
-# Installer Playwright et les dépendances du navigateur (Chromium dans ce cas)
-# --with-deps installe également les bibliothèques système nécessaires
-RUN npx playwright install --with-deps chromium
-
-# Exposer le port par défaut de n8n
 EXPOSE 5678
-
-# Le point d'entrée par défaut de l'image de base (CMD ["n8n"]) sera utilisé
