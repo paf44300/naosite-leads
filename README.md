@@ -1,33 +1,22 @@
-# Projet Naosite-Leads (MVP Loire-Atlantique)
+# 🛠️ Naosite-Leads — MVP Loire-Atlantique
 
-Ce dépôt contient l'infrastructure en tant que code (IaC) pour un pipeline de génération de leads B2B entièrement automatisé.
+Pipeline automatisé pour détecter les entreprises sans site web, enrichir leurs coordonnées via DropContact, puis les importer dans Zoho CRM et Facebook CAPI.
 
-## 🎯 Objectif
+## Fonctionnement
+1. **Scraping** Google Maps avec Playwright + proxy Webshare, orchestré par n8n.
+2. **Filtrage** des fiches sans lien « Site Web ».
+3. **Enrichissement** avec DropContact (`siren:true`).
+4. **Intégration** dans Zoho CRM et une audience Facebook.
+5. **Sauvegarde** des données brutes sur un stockage S3 (Scaleway, Backblaze B2, etc.).
 
-L'objectif est d'identifier les PME et indépendants du département de la Loire-Atlantique (44) qui n'ont pas de site web, d'enrichir leurs coordonnées (email + SIREN), et de les intégrer automatiquement dans un CRM (Zoho) ainsi qu'une audience publicitaire (Facebook).
+## Déploiement sur Fly.io
+```bash
+# 1. Cloner le dépôt
+git clone [https://github.com/votre-organisation/naosite-leads.git](https://github.com/votre-organisation/naosite-leads.git)
+cd naosite-leads
 
-## ⚙️ Architecture
+# 2. Renseigner les secrets sur Fly.io (exemple partiel)
+fly secrets set PROXY_PASS="votre_mdp" DROP_TOKEN="votre_token" N8N_ENCRYPTION_KEY="votre_cle_de_32_caracteres" ...
 
-Le projet est orchestré par **n8n** et déployé sur **Fly.io** via une pipeline CI/CD utilisant **GitHub Actions**.
-
-- **Déclencheur** : Un CRON quotidien lance le workflow.
-- **Scraping** : Un scraper **Playwright** interroge Google Maps via des proxys rotatifs français (**Webshare**) pour trouver des entreprises.
-- **Filtrage** : Le workflow isole les entreprises n'ayant pas de site web.
-- **Enrichissement** : **DropContact** est utilisé pour trouver les adresses e-mail professionnelles et les numéros SIREN.
-- **Intégration** : Les leads qualifiés sont créés ou mis à jour dans **Zoho CRM** et synchronisés avec une audience **Facebook via CAPI**.
-- **Sauvegarde** : Les données brutes sont archivées sur un stockage objet (S3/B2).
-
-## 🚀 Déploiement
-
-1.  **Cloner le dépôt** : `git clone https://github.com/your-username/naosite-leads.git`
-2.  **Configurer Fly.io** : Créez une application sur Fly.io et configurez les secrets listés dans le `fly.toml` (ou le document de solution).
-3.  **Configurer GitHub** : Ajoutez le secret `FLY_API_TOKEN` dans les paramètres du dépôt GitHub (`Settings > Secrets and variables > Actions`).
-4.  **Déployer** : Poussez les modifications sur la branche `main` pour déclencher le déploiement automatique via GitHub Actions.
-
-## 💻 Développement Local
-
-Pour les tests en local, utilisez Docker Compose :
-
-1.  Renommez `.env.example` en `.env` et remplissez les variables d'environnement.
-2.  Lancez les conteneurs : `docker-compose up --build`
-3.  L'interface n8n sera accessible à l'adresse `http://localhost:5678`.
+# 3. Mettre en production
+git push origin main
