@@ -1,5 +1,5 @@
 # Node 20 + Debian slim
-FROM node:20-slim                # ≈170 Mo
+FROM node:20-slim               
 
 # Paquets système utiles
 RUN apt-get update \
