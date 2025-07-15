@@ -1,24 +1,18 @@
-# Dockerfile final et corrigé
+# Node 20 + Debian slim
+FROM node:20-slim                # ≈170 Mo
 
-# Utilise l'image basée sur Debian, compatible avec Playwright
-FROM n8nio/n8n:1.45.1
+# Paquets système utiles
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends wget jq bc tzdata ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
-ENV TZ=Europe/Paris
-ENV DEBIAN_FRONTEND=noninteractive
+# n8n + Playwright (package + navigateurs)
+RUN npm install -g n8n@1.45.1 playwright@1.54.1 \
+ && playwright install --with-deps chromium
 
-# Passe en root pour les installations
-USER root
-
-# Installe les dépendances avec apt-get (pour Debian)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends tzdata wget jq bc && \
-    rm -rf /var/lib/apt/lists/*
-
-# Installe Playwright et ses dépendances (fonctionnera car l'OS est supporté)
-RUN npx playwright install --with-deps chromium
-
-# Revient à l'utilisateur non-privilégié pour la sécurité
-USER node
-WORKDIR /home/node
+# Fuseau horaire
+RUN ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime \
+ && echo "Europe/Paris" > /etc/timezone
 
 EXPOSE 5678
+CMD ["n8n"]
