@@ -1,5 +1,5 @@
 # n8n Community – Debian + Playwright
-FROM n8nio/n8n:1.45.1-debian   # ← rien d’autre sur cette ligne
+FROM n8nio/n8n:1.45.1-debian
 
 USER root
 RUN apt-get update \
