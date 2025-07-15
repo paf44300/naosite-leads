@@ -1,14 +1,12 @@
-# n8n Community (Alpine) + Playwright – installation faite en root
-FROM n8nio/n8n:1.45.1
+# n8n Community · Debian + Playwright
+FROM n8nio/n8n:1.45.1-debian   # <-- variante Debian !
 
-# --- Paquets système + Playwright ---
 USER root
-RUN apk add --no-cache tzdata wget jq bc shadow \
- && npm install -g --omit=dev playwright@1.54.1 \
- && playwright install --with-deps chromium \
- && cp /usr/share/zoneinfo/Europe/Paris /etc/localtime \
- && echo "Europe/Paris" > /etc/timezone
+# paquets utilitaires + Playwright (navigateurs)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends wget jq bc tzdata \
+ && npx --yes playwright install --with-deps chromium \
+ && rm -rf /var/lib/apt/lists/*
 
-# --- Revenir à l’utilisateur non-privilégié ---
 USER node
 EXPOSE 5678
