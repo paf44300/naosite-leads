@@ -14,3 +14,8 @@ app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
   [[services.ports]]
     handlers = ["http"]
     port = 443
+
+[mounts]
+  source      = "n8n_data"   # nom exact du volume (fly volumes list)
+  destination = "/data"      # chemin à l’intérieur du conteneur
+  processes   = ["app"]      # facultatif, mais conseillé
