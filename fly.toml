@@ -3,6 +3,10 @@ app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
 [build]
   dockerfile = "Dockerfile"      # indique à Fly d’utiliser ton Dockerfile
 
+[[mounts]]
+  source      = "n8n_data"
+  destination = "/root/.n8n"
+  
 [[services]]
   internal_port = 5678           # port exposé par n8n
   protocol      = "tcp"
@@ -14,7 +18,3 @@ app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
   [[services.ports]]
     handlers = ["http","tls"]
     port = 443
-
-[mounts]
-  source      = "n8n_data"          # NOM du volume, jamais l’ID vol_…
-  destination = "/home/node/.n8n"   # dossier où n8n stocke sa DB par défaut  [oai_citation:2‡n8n Docs](https://docs.n8n.io/hosting/configuration/configuration-examples/custom-nodes-location/?utm_source=chatgpt.com)
