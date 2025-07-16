@@ -19,11 +19,11 @@ jobs:
           version: latest                               # optionnel : verrouille la version
 
 
-name: Deploy to Fly.io
-on: [push]
+      - name: Deploy to Fly.io
+        on: [push]
 
-jobs:
-  deploy:
+  jobs:
+    deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
