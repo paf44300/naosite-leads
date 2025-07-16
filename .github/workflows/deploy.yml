@@ -10,34 +10,27 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
-    # 3️⃣ – Variables d’environnement communes au job
-    env:
-      FLY_API_TOKEN:            ${{ secrets.FLY_API_TOKEN }}
-      N8N_DEFAULT_USER_EMAIL:   ${{ secrets.N8N_DEFAULT_USER_EMAIL }}
-      N8N_DEFAULT_USER_PASSWORD: ${{ secrets.N8N_DEFAULT_USER_PASSWORD }}
-      ENCRYPTION_KEY:           ${{ secrets.ENCRYPTION_KEY }}
-
     steps:
-      # 4️⃣ – Récupération du code
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 5️⃣ – Installation de flyctl (action officielle)
       - name: Setup Flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@v1   # une seule action suffit
+        uses: superfly/flyctl-actions/setup-flyctl@v1
         with:
-          version: latest                               # verrouiller si besoin
+          version: latest
 
-      # 6️⃣ – (Optionnel) mise à jour des secrets côté Fly
-      - name: Sync Fly secrets
+      # 1️⃣  On pousse/MAJ les secrets – sans --yes
+      - name: Set Fly secrets
         run: |
           flyctl secrets set \
-            N8N_DEFAULT_USER_EMAIL="$N8N_DEFAULT_USER_EMAIL" \
-            N8N_DEFAULT_USER_PASSWORD="$N8N_DEFAULT_USER_PASSWORD" \
-            ENCRYPTION_KEY="$ENCRYPTION_KEY" \
-            --app naosite-leads-mdvmcg --yes
+            N8N_DEFAULT_USER_EMAIL="${{ secrets.N8N_DEFAULT_USER_EMAIL }}" \
+            N8N_DEFAULT_USER_PASSWORD="${{ secrets.N8N_DEFAULT_USER_PASSWORD }}" \
+            ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
+            --app naosite-leads-mdvmcg --stage   # pas de --yes
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
-      # 7️⃣ – Déploiement
-      - name: Deploy app
+      # 2️⃣  Puis on déploie, une seule ligne
+      - name: Deploy to Fly.io
         run: flyctl deploy --remote-only --app naosite-leads-mdvmcg
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
