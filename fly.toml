@@ -12,7 +12,7 @@ app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
     port = 80
 
   [[services.ports]]
-    handlers = ["http""tls",]
+    handlers = ["http","tls"]
     port = 443
 
 [mounts]
