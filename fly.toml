@@ -16,6 +16,5 @@ app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
     port = 443
 
 [mounts]
-  source      = "n8n_data"   # nom exact du volume (fly volumes list)
-  destination = "/data"      # chemin à l’intérieur du conteneur
-  processes   = ["app"]      # facultatif, mais conseillé
+  source      = "n8n_data"          # NOM du volume, jamais l’ID vol_…
+  destination = "/home/node/.n8n"   # dossier où n8n stocke sa DB par défaut  [oai_citation:2‡n8n Docs](https://docs.n8n.io/hosting/configuration/configuration-examples/custom-nodes-location/?utm_source=chatgpt.com)
