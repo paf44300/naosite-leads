@@ -18,14 +18,14 @@ jobs:
         with:
           version: latest
 
-      # 1️⃣  On pousse/MAJ les secrets – sans --yes
+      # 1️⃣  On pousse/MAJ les secrets 
       - name: Set Fly secrets
         run: |
           flyctl secrets set \
             N8N_DEFAULT_USER_EMAIL="${{ secrets.N8N_DEFAULT_USER_EMAIL }}" \
             N8N_DEFAULT_USER_PASSWORD="${{ secrets.N8N_DEFAULT_USER_PASSWORD }}" \
             ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
-            --app naosite-leads-mdvmcg --stage   # pas de --yes
+            --app naosite-leads-mdvmcg --stage 
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
