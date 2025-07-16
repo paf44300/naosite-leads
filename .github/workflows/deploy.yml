@@ -1,38 +1,43 @@
 name: Deploy to Fly.io
 
+# 1️⃣ – Déclencheurs
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [main]       # déploie à chaque push sur main
+  workflow_dispatch:       # déclenchement manuel dans l’onglet Actions
 
+# 2️⃣ – Un seul job
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
+    # 3️⃣ – Variables d’environnement communes au job
+    env:
+      FLY_API_TOKEN:            ${{ secrets.FLY_API_TOKEN }}
+      N8N_DEFAULT_USER_EMAIL:   ${{ secrets.N8N_DEFAULT_USER_EMAIL }}
+      N8N_DEFAULT_USER_PASSWORD:${{ secrets.N8N_DEFAULT_USER_PASSWORD }}
+      ENCRYPTION_KEY:           ${{ secrets.ENCRYPTION_KEY }}
+
     steps:
+      # 4️⃣ – Récupération du code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Chargement du binaire flyctl
+      # 5️⃣ – Installation de flyctl (action officielle)
       - name: Setup Flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@v1   # ← nouveau repo / tag
+        uses: superfly/flyctl-actions/setup-flyctl@v1   # une seule action suffit
         with:
-          version: latest                               # optionnel : verrouille la version
+          version: latest                               # verrouiller si besoin
 
+      # 6️⃣ – (Optionnel) mise à jour des secrets côté Fly
+      - name: Sync Fly secrets
+        run: |
+          flyctl secrets set \
+            N8N_DEFAULT_USER_EMAIL="$N8N_DEFAULT_USER_EMAIL" \
+            N8N_DEFAULT_USER_PASSWORD="$N8N_DEFAULT_USER_PASSWORD" \
+            ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+            --app naosite-leads-mdvmcg --yes
 
-      - name: Deploy to Fly.io
-        on: [push]
-
-  jobs:
-    deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: superfly/flyctl-action@1.3
-        with:
-          args: deploy --remote-only --app naosite-leads-mdvmcg
-        env:
-          FLY_API_TOKEN:            ${{ secrets.FLY_API_TOKEN }}
-          N8N_DEFAULT_USER_EMAIL:   ${{ secrets.N8N_DEFAULT_USER_EMAIL }}
-          N8N_DEFAULT_USER_PASSWORD: ${{ secrets.N8N_DEFAULT_USER_PASSWORD }}
-          ENCRYPTION_KEY:           ${{ secrets.ENCRYPTION_KEY }}
+      # 7️⃣ – Déploiement
+      - name: Deploy app
+        run: flyctl deploy --remote-only --app naosite-leads-mdvmcg
