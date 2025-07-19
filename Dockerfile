@@ -7,7 +7,7 @@ FROM node:20-slim
 USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget jq bc tzdata ca-certificates \
- && npm install -g n8n@1.45.1 playwright@1.54.1 \
+ && npm install -g n8n@1.102.4 playwright@1.54.1 \
  && playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/*
 
