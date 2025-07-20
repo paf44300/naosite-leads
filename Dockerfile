@@ -10,7 +10,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         wget jq bc tzdata ca-certificates \
         python3 python3-pip python3-venv \
- && ln -s /usr/bin/python3 /usr/bin/python \        # alias python → python3
+ && ln -s /usr/bin/python3 /usr/bin/python \        
  && npm install -g n8n@1.102.4 playwright@1.54.1 \
  && playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/*
