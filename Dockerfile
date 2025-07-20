@@ -2,10 +2,9 @@
 # n8n 1.102.4 · Debian Slim · Playwright Chromium + Python
 # ----------------------------------------------------------
 FROM node:20-slim
-
 USER root
 
-# 1) Paquets système + Python + n8n + Playwright
+# Paquets + n8n + Playwright + Python
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -16,12 +15,13 @@ RUN set -eux; \
     playwright install --with-deps chromium; \
     rm -rf /var/lib/apt/lists/*
 
-# 2) Dossier scripts (assure qu’il existe toujours)
+# ----------------------------------------------------------------------------
+# Copie les scrapers (==> assure-toi que le dossier existe dans le dépôt git)
+# ----------------------------------------------------------------------------
 RUN mkdir -p /work/scripts
-COPY scrapers/ /work/scripts/
+COPY scripts/ /work/scripts/          # ← adapte ici si tu gardes “scripts/”
 RUN chmod +x /work/scripts/*.py
 
-# 3) Fuseau horaire
 RUN ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime \
  && echo "Europe/Paris" > /etc/timezone
 
