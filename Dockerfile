@@ -19,7 +19,7 @@ RUN set -eux; \
 # Copie les scrapers (==> assure-toi que le dossier existe dans le dépôt git)
 # ----------------------------------------------------------------------------
 RUN mkdir -p /work/scripts
-COPY scripts/ /work/scripts/          # ← adapte ici si tu gardes “scripts/”
+COPY scripts/ /work/scripts/         
 RUN chmod +x /work/scripts/*.py
 
 RUN ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime \
