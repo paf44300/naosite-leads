@@ -41,4 +41,3 @@ RUN ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime && \
 
 EXPOSE 5678
 CMD ["n8n"]
-
