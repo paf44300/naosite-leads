@@ -13,6 +13,8 @@ RUN set -eux; \
     ln -sf /usr/bin/python3 /usr/bin/python; \
     npm install -g n8n@1.102.4 playwright@1.54.1; \
     playwright install --with-deps chromium; \
+    pip install playwright; \
+    playwright install --with-deps; \
     rm -rf /var/lib/apt/lists/*
 
 # ----------------------------------------------------------------------------
