@@ -25,17 +25,6 @@ PROXY_HOST = os.getenv("p.webshare.io")
 PROXY_PORT = os.getenv("80")
 PROXY_USER = os.getenv("xftpfnvt")
 PROXY_PASS = os.getenv("yulnmnbiq66j")
-
-def extract_address(address_raw):
-    m = re.search(r"(?:Plumber|Plombier) · ([^\n,]+)", address_raw)
-    if m:
-        return m.group(1).strip()
-    return address_raw
-
-def extract_city(address_clean):
-    if ',' in address_clean:
-        return address_clean.split(',')[-1].strip()
-    return ""
     
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
@@ -361,11 +350,16 @@ def scrape_maps(query, city="", limit=50, debug=False):
                         phone = phone_match.group(1)
                         # On nettoie le bloc d'infos du téléphone pour isoler l'adresse
                         info_text = info_text.replace(phone, '').strip()
+                         
+                    # 3. On nettoie ce qui reste pour obtenir l'adresse en se basant sur le séparateur '·'
+                    address_cleaned = info_text
 
-                    # 3. On nettoie ce qui reste pour obtenir l'adresse
-                    # On supprime les horaires et autres indicateurs comme "·"
-                    address_cleaned = re.sub(r'^(Open|Closes|Ouvert|Ferme)[\s\S]*?·', '', info_text)
-                    address_cleaned = address_cleaned.strip(' ·-').strip()
+                    # Si un séparateur est présent, on suppose que l'adresse est la dernière partie
+                    if '·' in info_text:
+                    address_cleaned = info_text.split('·')[-1]
+
+                    # Nettoyage final des sauts de ligne et espaces superflus
+                    address_cleaned = address_cleaned.strip()
                     
                     # S'il reste quelque chose qui ressemble à une adresse, on la prend
                     if len(address_cleaned) > 5:
