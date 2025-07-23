@@ -181,83 +181,86 @@ def normalize_data(raw_data, query, search_city="", debug=False): # Ajout de sea
     return result
 
 def scrape_maps(query, city="", limit=50, debug=False):
-    """Scraper Google Maps avec anti-détection et harmonisation (version nettoyée)."""
+    """Scraper Google Maps avec une recherche de sélecteurs robuste."""
     results = []
-    
     log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
-    
+
     try:
         with sync_playwright() as p:
-            browser_args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
-            browser = p.chromium.launch(headless=True, args=browser_args, proxy={"server": "http://p.webshare.io:80", "username": "xftpfnvt-1", "password": "yulnmnbiq66j"})
-            log_info("Backbone proxy configuré.", debug)
-
-            context = browser.new_context(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+            context = browser.new_context(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
             page = context.new_page()
-            
-            search_query = f"{query} {city}".strip()
-            maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
-            
-            log_info(f"Accès URL: {maps_url}", debug)
-            page.goto(maps_url, wait_until='networkidle', timeout=30000)
-            time.sleep(random.uniform(3, 5))
-            
-            max_scrolls = min(10, (limit // 10) + 2)
-            for scroll in range(max_scrolls):
-                page.evaluate("const sidebar = document.querySelector('[role=\"main\"]'); if (sidebar) { sidebar.scrollTop = sidebar.scrollHeight; } else { window.scrollTo(0, document.body.scrollHeight); }")
-                time.sleep(random.uniform(1.5, 3))
-                log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
 
-            log_info("Début extraction données", debug)
-            businesses = page.query_selector_all('[role="article"]')
+            search_query = f"{query} {city}".strip()
+            # Utilisation d'une URL standard de Google Maps pour plus de stabilité
+            maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
+            log_info(f"Accès URL: {maps_url}", debug)
+
+            page.goto(maps_url, wait_until='domcontentloaded', timeout=60000)
+            page.wait_for_selector('div[role="feed"]', timeout=30000) # Attendre que le conteneur principal des résultats soit chargé
+            time.sleep(random.uniform(2, 4))
+
+            # Scroll pour charger la page
+            for _ in range(min(5, (limit // 10))):
+                main_feed = page.query_selector('div[role="feed"]')
+                if main_feed:
+                    page.evaluate('(feed) => feed.scrollTop = feed.scrollHeight', main_feed)
+                else: # Fallback si le feed n'est pas trouvé
+                    page.mouse.wheel(0, 15000)
+                time.sleep(random.uniform(1, 2))
+
+            # Liste de sélecteurs potentiels pour les fiches business
+            business_selectors = [
+                'div[role="feed"] > div > div[role="article"]', # Sélecteur plus précis
+                'div[role="article"]',
+                'div[jsaction*="mouseover.search_result"]',
+                'div.Nv2PK',
+                'div.qBF1Pd'
+            ]
+
+            businesses = []
+            for selector in business_selectors:
+                businesses = page.query_selector_all(selector)
+                if businesses:
+                    log_info(f"Trouvé {len(businesses)} éléments avec le sélecteur: '{selector}'", debug)
+                    break
+
             if not businesses:
-                log_error("Aucun élément business trouvé sur la page.")
+                log_error("Aucun élément business trouvé sur la page avec les sélecteurs actuels.")
                 browser.close()
                 return []
-            
+
+            # (Le reste de la logique d'extraction reste identique)
             extracted_count = 0
             for idx, business in enumerate(businesses):
                 if extracted_count >= limit:
                     break
-                
                 try:
-                    name_el = business.query_selector('h3, .fontHeadlineSmall, [role="heading"]')
+                    name_el = business.query_selector('h3, .fontHeadlineSmall, [role="heading"], .qBF1Pd')
                     name = name_el.inner_text().strip() if name_el else ""
                     if not name:
                         continue
                     
-                    has_website = business.query_selector('[aria-label*="Site Web"], [aria-label*="Website"], [data-value="Website"]')
+                    has_website = business.query_selector('[data-value="Website"]')
                     if has_website:
                         log_info(f"Ignoré {name}: site web détecté", debug)
                         continue
-                    
+
                     full_text = business.inner_text()
-                    phone = ""
-                    address = ""
-
+                    phone, address = "", ""
+                    
                     phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', full_text)
-                    if phone_match:
-                        phone = phone_match.group(1)
+                    if phone_match: phone = phone_match.group(1)
 
-                    address_match = re.search(r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin|Route|Cours|Voie|Passage|Lieu-dit)[\s\S]*?)(?:\n|$)', full_text)
-                    if address_match:
-                        address = address_match.group(1).strip()
+                    address_match = re.search(r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin)[\s\S]*?)(?:\n|$)', full_text)
+                    if address_match: address = address_match.group(1).strip()
                     
-                    raw_data = {
-                        'name': name,
-                        'activity': query,
-                        'phone': phone,
-                        'address': address,
-                        'index': idx
-                    }
-                    
+                    raw_data = {'name': name, 'activity': query, 'phone': phone, 'address': address}
                     normalized = normalize_data(raw_data, query, city, debug)
-                    
+
                     if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
                         results.append(normalized)
                         extracted_count += 1
-                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
-                    
                 except Exception as e:
                     log_error(f"Erreur extraction business {idx} ({name}): {e}")
                     continue
@@ -266,7 +269,7 @@ def scrape_maps(query, city="", limit=50, debug=False):
             browser.close()
             
     except Exception as e:
-        log_error(f"Erreur scraping Maps: {e}")
+        log_error(f"Erreur majeure dans scrape_maps: {e}")
     
     return results
 
@@ -280,20 +283,29 @@ def main():
     
     args = parser.parse_args()
     
-    # Validation des arguments
     if not args.query.strip():
         log_error("Query ne peut pas être vide")
         sys.exit(1)
     
-    if args.limit <= 0 or args.limit > 1000:
-        log_error("Limit doit être entre 1 et 1000")
-        sys.exit(1)
-    
-    # Lancement du scraping
     try:
         start_time = time.time()
-        rresults = scrape_maps(args.query, args.city, args.limit, args.debug)
+        # Correction du typo : 'rresults' -> 'results'
+        results = scrape_maps(args.query, args.city, args.limit, args.debug)
         duration = time.time() - start_time
+        
+        log_info(f"Scraping terminé en {duration:.2f}s: {len(results)} résultats", args.debug)
+        
+        for result in results:
+            print(json.dumps(result, ensure_ascii=False))
+            
+    except Exception as e:
+        log_error(f"Erreur fatale: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+    
+    
         
         # Logs de résumé
         if args.debug:
