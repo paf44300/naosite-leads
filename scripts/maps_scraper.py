@@ -181,7 +181,6 @@ def normalize_data(raw_data, query, search_city="", debug=False): # Ajout de sea
     return result
 
 def scrape_maps(query, city="", limit=50, debug=False):
-    """Scraper Google Maps avec anti-détection et harmonisation"""
     results = []
     
     log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
