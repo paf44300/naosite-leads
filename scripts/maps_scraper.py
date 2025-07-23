@@ -23,8 +23,8 @@ except ImportError:
 # Configuration proxy Webshare
 PROXY_HOST = os.getenv("WEBSHARE_HOST", "proxy.webshare.io")
 PROXY_PORT = os.getenv("WEBSHARE_PORT", "8000")
-PROXY_USER = os.getenv("WEBSHARE_USERNAME")
-PROXY_PASS = os.getenv("WEBSHARE_PASS")
+PROXY_USER = os.getenv("xftpfnvt")
+PROXY_PASS = os.getenv("yulnmnbiq66j")
 
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
