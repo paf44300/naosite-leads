@@ -208,12 +208,12 @@ def scrape_maps(query, city="", limit=50, debug=False):
             headless=True,
             args=browser_args,
             proxy={
-                "server": f"http://{PROXY_SERVER}:{PROXY_PORT}",
+                "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
                 "username": PROXY_USER,
                 "password": PROXY_PASS
             }
         )
-        log_info(f"Backbone proxy configuré: {PROXY_USER}@{PROXY_SERVER}:{PROXY_PORT}", debug)
+        log_info(f"Backbone proxy configuré: {PROXY_USER}@{PROXY_HOST}:{PROXY_PORT}", debug)
 
         
         # Context avec user agent réaliste
