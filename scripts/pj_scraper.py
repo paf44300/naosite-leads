@@ -223,20 +223,16 @@ def scrape_pj(query, city="", limit=50, debug=False):
         browser_kwargs = {'headless': True, 'args': browser_args}
         
         # Proxy si disponible
-        if PROXY_USER and PROXY_PASS and PROXY_HOST:
-            proxy_config = {
-                "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
-                "username": PROXY_USER,
-                "password": PROXY_PASS
+        browser = p.chromium.launch(
+            headless=True,
+            args=browser_args,
+            proxy={
+                "server":   "http://p.webshare.io:80",
+                "username": "xftpfnvt-1",
+                "password": "yulnmnbiq66j"
             }
-            browser_kwargs['proxy'] = proxy_config
-            log_info(f"Proxy configuré: {PROXY_HOST}:{PROXY_PORT}", debug)
-        
-        try:
-            browser = p.chromium.launch(**browser_kwargs)
-        except Exception as e:
-            log_error(f"Erreur lancement navigateur: {e}")
-            return []
+        )
+        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
         
         context = browser.new_context(
             viewport={'width': 1366, 'height': 768},
