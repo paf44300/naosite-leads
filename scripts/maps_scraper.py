@@ -133,30 +133,30 @@ def extract_city_from_address(address):
     
     return address.split(',')[0].strip() if ',' in address else address.strip()
 
-def normalize_data(raw_data, query, debug=False):
-    """Normalise les données selon le schéma unifié Naosite"""
+def normalize_data(raw_data, query, search_city="", debug=False): # Ajout de search_city
+    """Normalise les données selon le schéma unifié Naosite."""
     
-    # Normalisation téléphone
     phone = normalize_phone(raw_data.get('phone', ''))
-    
-    # Extraction ville propre
     address = raw_data.get('address', '') or ''
-    city = extract_city_from_address(address)
     
-    # Nom entreprise nettoyé
+    # Extraction de la ville depuis l'adresse, SI POSSIBLE
+    extracted_city = extract_city_from_address(address)
+    
+    # Logique de fallback : si on n'a pas pu extraire la ville de l'adresse,
+    # on utilise la ville de la recherche initiale. Si l'adresse contient un code postal,
+    # extracted_city sera prioritaire.
+    city = extracted_city if re.search(r'\d{5}', address) else search_city.title()
+
     name = (raw_data.get('name', '') or '').strip()
-    if len(name) > 150:  # Limite raisonnable
+    if len(name) > 150:
         name = name[:150] + '...'
     
-    # Activité standardisée (utilise query si pas d'activité spécifique)
     activity = raw_data.get('activity') or query or ''
     normalized_activity = normalize_activity(activity)
     
-    # Calculs dérivés
     normalized_phone_digits = phone.replace('+', '').replace('-', '').replace(' ', '') if phone else ''
     mobile_detected = bool(phone and re.match(r'^\+33[67]', phone))
     
-    # Extraction code postal
     postal_match = re.search(r'\b(\d{5})\b', address)
     city_code = postal_match.group(1) if postal_match else None
     
@@ -164,23 +164,20 @@ def normalize_data(raw_data, query, debug=False):
         "name": name,
         "activity": normalized_activity,
         "phone": phone,
-        "email": None,  # Google Maps rarement emails
+        "email": None,
         "address": address,
-        "city": city,
-        "website": None,  # Toujours null (critère de filtrage)
-        "source": "google_maps",
+        "city": city, # Le champ ville sera maintenant correct
+        "website": None,
+        "source": "Maps",
         "scraped_at": datetime.now(timezone.utc).isoformat(),
         
-        # Champs calculés pour le scoring
         "normalized_phone": normalized_phone_digits,
         "mobile_detected": mobile_detected,
         "city_code": city_code,
         
-        # Métadonnées pour debug
         "raw_data": raw_data if debug else None
     }
     
-    # Nettoyer les None si pas debug
     if not debug:
         result = {k: v for k, v in result.items() if v is not None}
     
@@ -360,12 +357,21 @@ def scrape_maps(query, city="", limit=50, debug=False):
                     if len(address_cleaned) > 5:
                          address = address_cleaned
                     else: # Fallback sur les anciens sélecteurs si la nouvelle méthode échoue
-                        address_selectors = ['[data-value*="Address"]', '.W4Efsd:nth-of-type(2) .W4Efsd']
-                        for addr_sel in address_selectors:
-                            addr_el = business.query_selector(addr_sel)
-                            if addr_el:
-                                address = addr_el.inner_text().strip()
-                                break
+                        # --- NOUVELLE LOGIQUE D'EXTRACTION ADRESSE ---
+                    
+                    # 1. On récupère tout le texte du bloc business
+                    full_text = business.inner_text()
+                    address = ""
+
+                    # 2. On extrait l'adresse avec une regex qui cible un format d'adresse
+                    # Cherche : un numéro, un type de voie (Rue, Quai, etc.), et le reste de la ligne.
+                    address_match = re.search(
+                        r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin|Route|Cours|Voie|Passage|Lieu-dit)[\s\S]*?)(?:\n|$)',
+                        full_text
+                    )
+                    if address_match:
+                        # On prend le résultat et on nettoie les espaces superflus
+                        address = address_match.group(1).strip()
                     
                     # Construction données brutes
                     raw_data = {
@@ -377,7 +383,7 @@ def scrape_maps(query, city="", limit=50, debug=False):
                     }
                     
                     # Normalisation selon schéma unifié
-                    normalized = normalize_data(raw_data, query, debug)
+                    normalized = normalize_data(raw_data, query, city, debug)
                     
                     # Validation données minimales
                     if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
