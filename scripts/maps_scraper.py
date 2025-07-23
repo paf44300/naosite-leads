@@ -334,43 +334,38 @@ def scrape_maps(query, city="", limit=50, debug=False):
                         log_info(f"Ignoré {name}: site web détecté", debug)
                         continue
                     
-                    # Extraction téléphone
-                    phone_selectors = [
-                        '[aria-label*="Téléphone"]',
-                        '[aria-label*="Phone"]',
-                        '[data-value="Phone"]',
-                        '.rogA2c'
-                    ]
+                  # --- NOUVELLE LOGIQUE D'EXTRACTION ADRESSE ET TÉLÉPHONE ---
                     
+                    # 1. On récupère tout le bloc d'infos textuelles du business
+                    # Ce sélecteur est plus générique et cible le conteneur d'infos
+                    info_block_el = business.query_selector('.fontBodyMedium')
+                    info_text = info_block_el.inner_text().strip() if info_block_el else ""
+
                     phone = ""
-                    for phone_sel in phone_selectors:
-                        try:
-                            phone_el = business.query_selector(phone_sel)
-                            if phone_el:
-                                # Téléphone peut être dans aria-label ou text
-                                phone = phone_el.get_attribute('aria-label') or phone_el.inner_text()
-                                if phone and any(c.isdigit() for c in phone):
-                                    break
-                        except:
-                            continue
-                    
-                    # Extraction adresse
-                    address_selectors = [
-                        '[data-value="Address"]',
-                        '.W4Efsd:nth-of-type(2)',
-                        '.rogA2c .fontBodyMedium'
-                    ]
-                    
                     address = ""
-                    for addr_sel in address_selectors:
-                        try:
+
+                    # 2. On cherche un numéro de téléphone dans ce bloc
+                    phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', info_text)
+                    if phone_match:
+                        phone = phone_match.group(1)
+                        # On nettoie le bloc d'infos du téléphone pour isoler l'adresse
+                        info_text = info_text.replace(phone, '').strip()
+
+                    # 3. On nettoie ce qui reste pour obtenir l'adresse
+                    # On supprime les horaires et autres indicateurs comme "·"
+                    address_cleaned = re.sub(r'^(Open|Closes|Ouvert|Ferme)[\s\S]*?·', '', info_text)
+                    address_cleaned = address_cleaned.strip(' ·-').strip()
+                    
+                    # S'il reste quelque chose qui ressemble à une adresse, on la prend
+                    if len(address_cleaned) > 5:
+                         address = address_cleaned
+                    else: # Fallback sur les anciens sélecteurs si la nouvelle méthode échoue
+                        address_selectors = ['[data-value*="Address"]', '.W4Efsd:nth-of-type(2) .W4Efsd']
+                        for addr_sel in address_selectors:
                             addr_el = business.query_selector(addr_sel)
                             if addr_el:
                                 address = addr_el.inner_text().strip()
-                                if address and len(address) > 5:
-                                    break
-                        except:
-                            continue
+                                break
                     
                     # Construction données brutes
                     raw_data = {
