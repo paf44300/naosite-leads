@@ -181,226 +181,92 @@ def normalize_data(raw_data, query, search_city="", debug=False): # Ajout de sea
     return result
 
 def scrape_maps(query, city="", limit=50, debug=False):
+    """Scraper Google Maps avec anti-détection et harmonisation (version nettoyée)."""
     results = []
     
     log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
     
-    with sync_playwright() as p:
-        # 1. Configuration des args Chrome
-        browser_args = [
-            '--no-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-extensions',
-            '--no-first-run',
-            '--disable-default-apps'
-        ]
+    try:
+        with sync_playwright() as p:
+            browser_args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
+            browser = p.chromium.launch(headless=True, args=browser_args, proxy={"server": "http://p.webshare.io:80", "username": "xftpfnvt-1", "password": "yulnmnbiq66j"})
+            log_info("Backbone proxy configuré.", debug)
 
-        # 2. Lancement du navigateur via le Backbone Connection Webshare EN CLAIR
-        browser = p.chromium.launch(
-            headless=True,
-            args=browser_args,
-            proxy={
-                "server":   "http://p.webshare.io:80",
-                "username": "xftpfnvt-1",
-                "password": "yulnmnbiq66j"
-            }
-        )
-        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
-
-        # Context avec user agent réaliste
-        context = browser.new_context(
-            viewport={'width': 1366, 'height': 768},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
-        
-        page = context.new_page()
-        
-        try:
-            # Construction URL de recherche
+            context = browser.new_context(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            page = context.new_page()
+            
             search_query = f"{query} {city}".strip()
             maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
             
             log_info(f"Accès URL: {maps_url}", debug)
-            
-            # Navigation avec timeout
             page.goto(maps_url, wait_until='networkidle', timeout=30000)
-            
-            # Attente chargement initial
             time.sleep(random.uniform(3, 5))
             
-            # Scroll pour charger plus de résultats
-            scroll_attempts = 0
-            max_scrolls = min(10, (limit // 10) + 2)  # Adaptive selon limite
-            
+            max_scrolls = min(10, (limit // 10) + 2)
             for scroll in range(max_scrolls):
-                try:
-                    # Scroll dans la liste des résultats
-                    page.evaluate("""
-                        const sidebar = document.querySelector('[role="main"]');
-                        if (sidebar) {
-                            sidebar.scrollTop += 1000;
-                        } else {
-                            window.scrollBy(0, 1000);
-                        }
-                    """)
-                    
-                    time.sleep(random.uniform(1.5, 3))
-                    scroll_attempts += 1
-                    
-                    log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
-                    
-                except Exception as e:
-                    log_error(f"Erreur scroll {scroll}: {e}")
-                    break
-            
-            # Extraction des résultats
+                page.evaluate("const sidebar = document.querySelector('[role=\"main\"]'); if (sidebar) { sidebar.scrollTop = sidebar.scrollHeight; } else { window.scrollTo(0, document.body.scrollHeight); }")
+                time.sleep(random.uniform(1.5, 3))
+                log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
+
             log_info("Début extraction données", debug)
-            
-            # Sélecteurs Google Maps (multiples pour robustesse)
-            business_selectors = [
-                '[data-result-index]',
-                '[role="article"]',
-                '.Nv2PK',
-                '[jsaction*="mouseover"]'
-            ]
-            
-            businesses = []
-            for selector in business_selectors:
-                try:
-                    businesses = page.query_selector_all(selector)
-                    if businesses:
-                        log_info(f"Trouvé {len(businesses)} éléments avec sélecteur {selector}", debug)
-                        break
-                except:
-                    continue
-            
+            businesses = page.query_selector_all('[role="article"]')
             if not businesses:
-                log_error("Aucun élément business trouvé sur la page")
+                log_error("Aucun élément business trouvé sur la page.")
+                browser.close()
                 return []
             
             extracted_count = 0
-            
             for idx, business in enumerate(businesses):
                 if extracted_count >= limit:
                     break
                 
                 try:
-                    # Extraction nom
-                    name_selectors = [
-                        'h3', '.fontHeadlineSmall', '.qBF1Pd', 
-                        '[role="button"] span', '.OSrXXb'
-                    ]
-                    
-                    name = ""
-                    for name_sel in name_selectors:
-                        try:
-                            name_el = business.query_selector(name_sel)
-                            if name_el:
-                                name = name_el.inner_text().strip()
-                                if name and len(name) > 2:
-                                    break
-                        except:
-                            continue
-                    
+                    name_el = business.query_selector('h3, .fontHeadlineSmall, [role="heading"]')
+                    name = name_el.inner_text().strip() if name_el else ""
                     if not name:
                         continue
                     
-                    # Vérification absence site web (critère principal)
-                    website_indicators = [
-                        '[aria-label*="Site Web"]',
-                        '[aria-label*="Website"]', 
-                        '[data-value="Website"]',
-                        'a[href^="http"]:not([href*="google"]):not([href*="maps"])'
-                    ]
-                    
-                    has_website = False
-                    for indicator in website_indicators:
-                        try:
-                            if business.query_selector(indicator):
-                                has_website = True
-                                break
-                        except:
-                            continue
-                    
+                    has_website = business.query_selector('[aria-label*="Site Web"], [aria-label*="Website"], [data-value="Website"]')
                     if has_website:
                         log_info(f"Ignoré {name}: site web détecté", debug)
                         continue
                     
-                   # --- LOGIQUE D'EXTRACTION AMÉLIORÉE V3 ---
-                    
-                    # 1. On récupère tout le texte du bloc business
                     full_text = business.inner_text()
                     phone = ""
                     address = ""
 
-                    # 2. On extrait le téléphone (cette partie fonctionnait bien)
                     phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', full_text)
                     if phone_match:
                         phone = phone_match.group(1)
 
-                    # 3. On extrait l'adresse avec une regex qui cible un format d'adresse français
-                    # Cherche un numéro, un type de voie (Rue, Quai, etc.), et le reste de la ligne.
-                    address_match = re.search(
-                        r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin|Route|Cours|Voie|Passage|Lieu-dit)[\s\S]*?)(?:\n|$)',
-                        full_text
-                    )
+                    address_match = re.search(r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin|Route|Cours|Voie|Passage|Lieu-dit)[\s\S]*?)(?:\n|$)', full_text)
                     if address_match:
-                        # On prend le résultat et on nettoie les espaces superflus
                         address = address_match.group(1).strip()
                     
-                    # Construction données brutes
                     raw_data = {
                         'name': name,
                         'activity': query,
-                        'phone': phone,
-                        'address': address, # Adresse maintenant beaucoup plus propre
-                        'index': idx
-                    }
-                    
-                    # Normalisation (on va l'améliorer à l'étape 2)
-                    normalized = normalize_data(raw_data, query, city, debug) # Notez l'ajout de 'city'
-                    
-                    if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
-                        results.append(normalized)
-                        extracted_count += 1
-                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
-                    
-                except Exception as e:
-                    log_error(f"Erreur extraction business {idx}: {e}")
-                    continue
-                    
-                    # Construction données brutes
-                    raw_data = {
-                        'name': name,
-                        'activity': query,  # Utilise la query comme activité de base
                         'phone': phone,
                         'address': address,
                         'index': idx
                     }
                     
-                    # Normalisation selon schéma unifié
-                    normalized = normalize_data(raw_data, query, debug)
+                    normalized = normalize_data(raw_data, query, city, debug)
                     
-                    # Validation données minimales
                     if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
                         results.append(normalized)
                         extracted_count += 1
                         log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
                     
                 except Exception as e:
-                    log_error(f"Erreur extraction business {idx}: {e}")
+                    log_error(f"Erreur extraction business {idx} ({name}): {e}")
                     continue
             
             log_info(f"Extraction terminée: {len(results)} résultats valides", debug)
+            browser.close()
             
-        except Exception as e:
-            log_error(f"Erreur scraping Maps: {e}")
-        finally:
-            try:
-                browser.close()
-            except:
-                pass
+    except Exception as e:
+        log_error(f"Erreur scraping Maps: {e}")
     
     return results
 
