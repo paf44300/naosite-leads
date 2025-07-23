@@ -351,16 +351,14 @@ def scrape_maps(query, city="", limit=50, debug=False):
                         # On nettoie le bloc d'infos du téléphone pour isoler l'adresse
                         info_text = info_text.replace(phone, '').strip()
                          
-                    # 3. On nettoie ce qui reste pour obtenir l'adresse en se basant sur le séparateur '·'
-                    address_cleaned = info_text
-
-                    # Si un séparateur est présent, on suppose que l'adresse est la dernière partie
+                   # 3. On nettoie ce qui reste pour obtenir l'adresse
+                # On se base sur le fait que l'adresse suit souvent le séparateur '·'
                     if '·' in info_text:
-                    address_cleaned = info_text.split('·')[-1]
-
-                    # Nettoyage final des sauts de ligne et espaces superflus
-                    address_cleaned = address_cleaned.strip()
-                    
+    # On prend la partie après le séparateur et on nettoie les espaces
+                        address_cleaned = info_text.split('·')[-1].strip()
+                    else:
+    # S'il n'y a pas de séparateur, on prend le texte tel quel et on nettoie les espaces
+                        address_cleaned = info_text.strip()
                     # S'il reste quelque chose qui ressemble à une adresse, on la prend
                     if len(address_cleaned) > 5:
                          address = address_cleaned
