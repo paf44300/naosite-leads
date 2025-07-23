@@ -192,37 +192,29 @@ def scrape_maps(query, city="", limit=50, debug=False):
     
     log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
     
-    with sync_playwright() as p:
-        # Configuration navigateur
-      
+     with sync_playwright() as p:
+        # 1. Configuration des args Chrome
+        browser_args = [
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-extensions',
+            '--no-first-run',
+            '--disable-default-apps'
+        ]
+
+        # 2. Lancement du navigateur via le Backbone Connection Webshare EN CLAIR
         browser = p.chromium.launch(
-        headless=True,
-        args=browser_args,
-        proxy={
-            "server": f"http://{PROXY_SERVER}:{PROXY_PORT}",
-            "username": PROXY_USER,
-            "password": PROXY_PASS
-        }
-    )
-    log_info(f"Backbone proxy configuré: {PROXY_USER}@{PROXY_SERVER}:{PROXY_PORT}", debug)
-        
-        # Configuration proxy si disponible
-        browser_kwargs = {'headless': True, 'args': browser_args}
-        
-        if PROXY_USER and PROXY_PASS and PROXY_HOST:
-            proxy_config = {
-                "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+            headless=True,
+            args=browser_args,
+            proxy={
+                "server": f"http://{PROXY_SERVER}:{PROXY_PORT}",
                 "username": PROXY_USER,
                 "password": PROXY_PASS
             }
-            browser_kwargs['proxy'] = proxy_config
-            log_info(f"Proxy configuré: {PROXY_HOST}:{PROXY_PORT}", debug)
-        
-        try:
-            browser = p.chromium.launch(**browser_kwargs)
-        except Exception as e:
-            log_error(f"Erreur lancement navigateur: {e}")
-            return []
+        )
+        log_info(f"Backbone proxy configuré: {PROXY_USER}@{PROXY_SERVER}:{PROXY_PORT}", debug)
+
         
         # Context avec user agent réaliste
         context = browser.new_context(
