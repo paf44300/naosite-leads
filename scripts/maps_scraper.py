@@ -194,8 +194,8 @@ def scrape_maps(query, city="", limit=50, debug=False):
     
     with sync_playwright() as p:
         # Configuration navigateur
-        browser_args = [
-           browser = p.chromium.launch(
+      
+        browser = p.chromium.launch(
         headless=True,
         args=browser_args,
         proxy={
