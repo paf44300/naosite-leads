@@ -366,21 +366,7 @@ def scrape_maps(query, city="", limit=50, debug=False):
                             if addr_el:
                                 address = addr_el.inner_text().strip()
                                 break
-
-                    import re
-
-                    def fix_addr_city(name: str, address_raw: str):
-                        addr = address_raw.split('·', 1)[0].strip()
-
-    # 2) si le nom du business s’est glissé en préfixe, on le retire
-                    if addr.lower().startswith(name.lower()):
-                        addr = addr[len(name):].lstrip(' ,')
-
-    # 3) extraire la ville après le code postal
-                        m = re.search(r'\b(\d{5})\s+([^\d,]+)$', addr)
-                        city = m.group(2).strip() if m else addr.split(',')[-1].strip()
-
-                    return addr, city
+                    
                     # Construction données brutes
                     raw_data = {
                         'name': name,
