@@ -21,8 +21,8 @@ except ImportError:
     sys.exit(1)
 
 # Configuration proxy Webshare
-PROXY_HOST = os.getenv("WEBSHARE_HOST", "proxy.webshare.io")
-PROXY_PORT = os.getenv("WEBSHARE_PORT", "8000")
+PROXY_HOST = os.getenv("proxy.webshare.io")
+PROXY_PORT = os.getenv("80")
 PROXY_USER = os.getenv("xftpfnvt")
 PROXY_PASS = os.getenv("yulnmnbiq66j")
 
