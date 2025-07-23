@@ -133,29 +133,30 @@ def extract_city_from_address(address):
     
     return address.split(',')[0].strip() if ',' in address else address.strip()
 
-def normalize_data(raw_data, query, search_city="", debug=False): # Ajout de search_city
-    """Normalise les données selon le schéma unifié Naosite."""
+def normalize_data(raw_data, query, debug=False):
+    """Normalise les données selon le schéma unifié Naosite"""
     
+    # Normalisation téléphone
     phone = normalize_phone(raw_data.get('phone', ''))
+    
+    # Extraction ville propre
     address = raw_data.get('address', '') or ''
+    city = extract_city_from_address(address)
     
-    # Extraction de la ville depuis l'adresse, SI POSSIBLE
-    extracted_city = extract_city_from_address(address)
-    
-    # Logique de fallback : si on n'a pas pu extraire la ville de l'adresse,
-    # on utilise la ville de la recherche initiale.
-    city = extracted_city if extracted_city and len(extracted_city) < len(address) else search_city.title()
-
+    # Nom entreprise nettoyé
     name = (raw_data.get('name', '') or '').strip()
-    if len(name) > 150:
+    if len(name) > 150:  # Limite raisonnable
         name = name[:150] + '...'
     
+    # Activité standardisée (utilise query si pas d'activité spécifique)
     activity = raw_data.get('activity') or query or ''
     normalized_activity = normalize_activity(activity)
     
+    # Calculs dérivés
     normalized_phone_digits = phone.replace('+', '').replace('-', '').replace(' ', '') if phone else ''
     mobile_detected = bool(phone and re.match(r'^\+33[67]', phone))
     
+    # Extraction code postal
     postal_match = re.search(r'\b(\d{5})\b', address)
     city_code = postal_match.group(1) if postal_match else None
     
@@ -163,113 +164,240 @@ def normalize_data(raw_data, query, search_city="", debug=False): # Ajout de sea
         "name": name,
         "activity": normalized_activity,
         "phone": phone,
-        "email": None,
+        "email": None,  # Google Maps rarement emails
         "address": address,
-        "city": city, # Le champ ville sera maintenant correct
-        "website": None,
-        "source": "Maps",
+        "city": city,
+        "website": None,  # Toujours null (critère de filtrage)
+        "source": "google_maps",
         "scraped_at": datetime.now(timezone.utc).isoformat(),
+        
+        # Champs calculés pour le scoring
         "normalized_phone": normalized_phone_digits,
         "mobile_detected": mobile_detected,
         "city_code": city_code,
+        
+        # Métadonnées pour debug
         "raw_data": raw_data if debug else None
     }
     
+    # Nettoyer les None si pas debug
     if not debug:
         result = {k: v for k, v in result.items() if v is not None}
     
     return result
 
 def scrape_maps(query, city="", limit=50, debug=False):
-    """Scraper Google Maps avec une recherche de sélecteurs robuste."""
+    """Scraper Google Maps avec anti-détection et harmonisation"""
     results = []
+    
     log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
+    
+    with sync_playwright() as p:
+        # 1. Configuration des args Chrome
+        browser_args = [
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-extensions',
+            '--no-first-run',
+            '--disable-default-apps'
+        ]
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-            context = browser.new_context(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
-            page = context.new_page()
+        # 2. Lancement du navigateur via le Backbone Connection Webshare EN CLAIR
+        browser = p.chromium.launch(
+            headless=True,
+            args=browser_args,
+            proxy={
+                "server":   "http://p.webshare.io:80",
+                "username": "xftpfnvt-1",
+                "password": "yulnmnbiq66j"
+            }
+        )
+        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
 
+        # Context avec user agent réaliste
+        context = browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+        
+        page = context.new_page()
+        
+        try:
+            # Construction URL de recherche
             search_query = f"{query} {city}".strip()
-            # Utilisation d'une URL standard de Google Maps pour plus de stabilité
             maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
+            
             log_info(f"Accès URL: {maps_url}", debug)
-
-            page.goto(maps_url, wait_until='domcontentloaded', timeout=60000)
-            page.wait_for_selector('div[role="feed"]', timeout=30000) # Attendre que le conteneur principal des résultats soit chargé
-            time.sleep(random.uniform(2, 4))
-
-            # Scroll pour charger la page
-            for _ in range(min(5, (limit // 10))):
-                main_feed = page.query_selector('div[role="feed"]')
-                if main_feed:
-                    page.evaluate('(feed) => feed.scrollTop = feed.scrollHeight', main_feed)
-                else: # Fallback si le feed n'est pas trouvé
-                    page.mouse.wheel(0, 15000)
-                time.sleep(random.uniform(1, 2))
-
-            # Liste de sélecteurs potentiels pour les fiches business
+            
+            # Navigation avec timeout
+            page.goto(maps_url, wait_until='networkidle', timeout=30000)
+            
+            # Attente chargement initial
+            time.sleep(random.uniform(3, 5))
+            
+            # Scroll pour charger plus de résultats
+            scroll_attempts = 0
+            max_scrolls = min(10, (limit // 10) + 2)  # Adaptive selon limite
+            
+            for scroll in range(max_scrolls):
+                try:
+                    # Scroll dans la liste des résultats
+                    page.evaluate("""
+                        const sidebar = document.querySelector('[role="main"]');
+                        if (sidebar) {
+                            sidebar.scrollTop += 1000;
+                        } else {
+                            window.scrollBy(0, 1000);
+                        }
+                    """)
+                    
+                    time.sleep(random.uniform(1.5, 3))
+                    scroll_attempts += 1
+                    
+                    log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
+                    
+                except Exception as e:
+                    log_error(f"Erreur scroll {scroll}: {e}")
+                    break
+            
+            # Extraction des résultats
+            log_info("Début extraction données", debug)
+            
+            # Sélecteurs Google Maps (multiples pour robustesse)
             business_selectors = [
-                'div[role="feed"] > div > div[role="article"]', # Sélecteur plus précis
-                'div[role="article"]',
-                'div[jsaction*="mouseover.search_result"]',
-                'div.Nv2PK',
-                'div.qBF1Pd'
+                '[data-result-index]',
+                '[role="article"]',
+                '.Nv2PK',
+                '[jsaction*="mouseover"]'
             ]
-
+            
             businesses = []
             for selector in business_selectors:
-                businesses = page.query_selector_all(selector)
-                if businesses:
-                    log_info(f"Trouvé {len(businesses)} éléments avec le sélecteur: '{selector}'", debug)
-                    break
-
+                try:
+                    businesses = page.query_selector_all(selector)
+                    if businesses:
+                        log_info(f"Trouvé {len(businesses)} éléments avec sélecteur {selector}", debug)
+                        break
+                except:
+                    continue
+            
             if not businesses:
-                log_error("Aucun élément business trouvé sur la page avec les sélecteurs actuels.")
-                browser.close()
+                log_error("Aucun élément business trouvé sur la page")
                 return []
-
-            # (Le reste de la logique d'extraction reste identique)
+            
             extracted_count = 0
+            
             for idx, business in enumerate(businesses):
                 if extracted_count >= limit:
                     break
+                
                 try:
-                    name_el = business.query_selector('h3, .fontHeadlineSmall, [role="heading"], .qBF1Pd')
-                    name = name_el.inner_text().strip() if name_el else ""
+                    # Extraction nom
+                    name_selectors = [
+                        'h3', '.fontHeadlineSmall', '.qBF1Pd', 
+                        '[role="button"] span', '.OSrXXb'
+                    ]
+                    
+                    name = ""
+                    for name_sel in name_selectors:
+                        try:
+                            name_el = business.query_selector(name_sel)
+                            if name_el:
+                                name = name_el.inner_text().strip()
+                                if name and len(name) > 2:
+                                    break
+                        except:
+                            continue
+                    
                     if not name:
                         continue
                     
-                    has_website = business.query_selector('[data-value="Website"]')
+                    # Vérification absence site web (critère principal)
+                    website_indicators = [
+                        '[aria-label*="Site Web"]',
+                        '[aria-label*="Website"]', 
+                        '[data-value="Website"]',
+                        'a[href^="http"]:not([href*="google"]):not([href*="maps"])'
+                    ]
+                    
+                    has_website = False
+                    for indicator in website_indicators:
+                        try:
+                            if business.query_selector(indicator):
+                                has_website = True
+                                break
+                        except:
+                            continue
+                    
                     if has_website:
                         log_info(f"Ignoré {name}: site web détecté", debug)
                         continue
-
-                    full_text = business.inner_text()
-                    phone, address = "", ""
                     
-                    phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', full_text)
-                    if phone_match: phone = phone_match.group(1)
-
-                    address_match = re.search(r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin)[\s\S]*?)(?:\n|$)', full_text)
-                    if address_match: address = address_match.group(1).strip()
+                  # --- NOUVELLE LOGIQUE D'EXTRACTION ADRESSE ET TÉLÉPHONE ---
                     
-                    raw_data = {'name': name, 'activity': query, 'phone': phone, 'address': address}
-                    normalized = normalize_data(raw_data, query, city, debug)
+                    # 1. On récupère tout le bloc d'infos textuelles du business
+                    # Ce sélecteur est plus générique et cible le conteneur d'infos
+                    info_block_el = business.query_selector('.fontBodyMedium')
+                    info_text = info_block_el.inner_text().strip() if info_block_el else ""
 
+                    phone = ""
+                    address = ""
+
+                    # 2. On cherche un numéro de téléphone dans ce bloc
+                    phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', info_text)
+                    if phone_match:
+                        phone = phone_match.group(1)
+                        # On nettoie le bloc d'infos du téléphone pour isoler l'adresse
+                        info_text = info_text.replace(phone, '').strip()
+
+                    # 3. On nettoie ce qui reste pour obtenir l'adresse
+                    # On supprime les horaires et autres indicateurs comme "·"
+                    address_cleaned = re.sub(r'^(Open|Closes|Ouvert|Ferme)[\s\S]*?·', '', info_text)
+                    address_cleaned = address_cleaned.strip(' ·-').strip()
+                    
+                    # S'il reste quelque chose qui ressemble à une adresse, on la prend
+                    if len(address_cleaned) > 5:
+                         address = address_cleaned
+                    else: # Fallback sur les anciens sélecteurs si la nouvelle méthode échoue
+                        address_selectors = ['[data-value*="Address"]', '.W4Efsd:nth-of-type(2) .W4Efsd']
+                        for addr_sel in address_selectors:
+                            addr_el = business.query_selector(addr_sel)
+                            if addr_el:
+                                address = addr_el.inner_text().strip()
+                                break
+                    
+                    # Construction données brutes
+                    raw_data = {
+                        'name': name,
+                        'activity': query,  # Utilise la query comme activité de base
+                        'phone': phone,
+                        'address': address,
+                        'index': idx
+                    }
+                    
+                    # Normalisation selon schéma unifié
+                    normalized = normalize_data(raw_data, query, debug)
+                    
+                    # Validation données minimales
                     if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
                         results.append(normalized)
                         extracted_count += 1
+                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
+                    
                 except Exception as e:
-                    log_error(f"Erreur extraction business {idx} ({name}): {e}")
+                    log_error(f"Erreur extraction business {idx}: {e}")
                     continue
             
             log_info(f"Extraction terminée: {len(results)} résultats valides", debug)
-            browser.close()
             
-    except Exception as e:
-        log_error(f"Erreur majeure dans scrape_maps: {e}")
+        except Exception as e:
+            log_error(f"Erreur scraping Maps: {e}")
+        finally:
+            try:
+                browser.close()
+            except:
+                pass
     
     return results
 
@@ -283,27 +411,39 @@ def main():
     
     args = parser.parse_args()
     
+    # Validation des arguments
     if not args.query.strip():
         log_error("Query ne peut pas être vide")
         sys.exit(1)
     
+    if args.limit <= 0 or args.limit > 1000:
+        log_error("Limit doit être entre 1 et 1000")
+        sys.exit(1)
+    
+    # Lancement du scraping
     try:
         start_time = time.time()
-        # Correction du typo : 'rresults' -> 'results'
         results = scrape_maps(args.query, args.city, args.limit, args.debug)
         duration = time.time() - start_time
         
-        log_info(f"Scraping terminé en {duration:.2f}s: {len(results)} résultats", args.debug)
+        # Logs de résumé
+        if args.debug:
+            log_info(f"Scraping terminé en {duration:.2f}s: {len(results)} résultats", True)
+            
+            # Stats par type de téléphone
+            mobile_count = sum(1 for r in results if r.get('mobile_detected'))
+            log_info(f"Téléphones mobiles: {mobile_count}/{len(results)}", True)
+            
+            # Stats par ville
+            cities = {}
+            for r in results:
+                city = r.get('city', 'Inconnu')
+                cities[city] = cities.get(city, 0) + 1
+            log_info(f"Répartition villes: {dict(list(cities.items())[:5])}", True)
         
+        # Output JSON Lines pour n8n
         for result in results:
             print(json.dumps(result, ensure_ascii=False))
-            
-    except Exception as e:
-        log_error(f"Erreur fatale: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
             
     except KeyboardInterrupt:
         log_info("Arrêt demandé par utilisateur", args.debug)
