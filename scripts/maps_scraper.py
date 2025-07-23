@@ -11,18 +11,6 @@ import time
 import random
 import argparse
 import re
-
-# matcher "… , 75001 Paris" ou "75001 Paris" au début
-m = re.match(r'^(.*?)(?:,\s*)?(\d{5})\s+(.+)$', address_raw)
-if m:
-    # groupe1 = la rue, groupe2 = CP, groupe3 = Ville
-    address = f"{m.group(1).strip()}, {m.group(2)}"
-    city = m.group(3).strip()
-else:
-    # fallback si l’address_raw est dans un format imprévu
-    parts = address_raw.split('·', 1)[0].split(',')
-    address = ','.join(parts[:-1]).strip()
-    city = parts[-1].strip()
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
