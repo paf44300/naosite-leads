@@ -1,111 +1,467 @@
-# ========================
-# maps_scraper.py
-# ------------------------
-# Scrapes Google Maps for businesses of a given activity that do **not** have a
-# "Website" button on their listing. Outputs one JSON object per line to STDOUT.
-#
-# Usage:
-#   python maps_scraper.py "plombier" [--city "Lyon"]
-#
-# Environment variables required:
-#   WEBSHARE_USERNAME / WEBSHARE_PASS  – credentials for the rotating proxy
-#   WEBSHARE_HOST      (optional)      – host (default: proxy.webshare.io)
-#   WEBSHARE_PORT      (optional)      – port (default: 80)
-#
-# Notes:
-# - Uses Playwright in headless mode with the Webshare rotating proxy.
-# - Stops scrolling when no new results have appeared for three consecutive scrolls.
-# - Filters out every card containing a "Website" button before yielding.
-# - Prints minimal lead information (name, phone, plusCode, mapsUrl, source).
-# ========================
+#!/usr/bin/env python3
+"""
+Google Maps Scraper v1.5 - Harmonisation des données
+Usage: python maps_scraper.py "plombier" --city "Nantes" --limit 50
+"""
 
-import asyncio, json, os, sys, time
-from pathlib import Path
-from typing import Generator, Dict, Any
-from playwright.async_api import async_playwright, Page
+import os
+import sys
+import json
+import time
+import random
+import argparse
+import re
+from datetime import datetime, timezone
+from urllib.parse import quote_plus
 
-SCROLL_PAUSE_SEC = 1.0
-MAX_IDLE = 3  # consecutive scrolls without new cards before break
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    print("ERREUR: Playwright non installé. Run: pip install playwright", file=sys.stderr)
+    sys.exit(1)
 
+# Configuration proxy Webshare
+PROXY_HOST = os.getenv("WEBSHARE_HOST", "proxy.webshare.io")
+PROXY_PORT = os.getenv("WEBSHARE_PORT", "8000")
+PROXY_USER = os.getenv("WEBSHARE_USERNAME")
+PROXY_PASS = os.getenv("WEBSHARE_PASS")
 
-def _proxy_config() -> Dict[str, str]:
-    username = os.getenv("WEBSHARE_USERNAME")
-    password = os.getenv("WEBSHARE_PASS")
-    if not username or not password:
-        raise RuntimeError("WEBSHARE credentials missing in env vars")
-    host = os.getenv("WEBSHARE_HOST", "proxy.webshare.io")
-    port = os.getenv("WEBSHARE_PORT", "80")
-    return {
-        "server": f"http://{host}:{port}",
-        "username": username,
-        "password": password,
+def log_error(message):
+    """Log erreur vers stderr pour n8n monitoring"""
+    print(f"[MAPS_SCRAPER ERROR] {message}", file=sys.stderr)
+
+def log_info(message, debug=False):
+    """Log info vers stderr si debug activé"""
+    if debug:
+        print(f"[MAPS_SCRAPER INFO] {message}", file=sys.stderr)
+
+def normalize_activity(activity):
+    """Standardise les activités selon les règles métier"""
+    if not activity:
+        return "Service"
+    
+    activity = activity.lower().strip()
+    
+    # Plombiers
+    if any(word in activity for word in ['plomb', 'sanitaire', 'chauffage eau']):
+        return 'Plombier'
+    
+    # Électriciens  
+    if any(word in activity for word in ['électr', 'electric', 'éclairage', 'installation électrique']):
+        return 'Électricien'
+        
+    # Chauffagistes
+    if any(word in activity for word in ['chauff', 'climat', 'pompe à chaleur', 'chaudière']):
+        return 'Chauffagiste'
+        
+    # Maçons
+    if any(word in activity for word in ['maçon', 'macon', 'bâti', 'construction', 'gros œuvre']):
+        return 'Maçon'
+        
+    # Autres métiers du bâtiment
+    if any(word in activity for word in ['couvreur', 'toiture', 'étanchéité']):
+        return 'Couvreur'
+    if any(word in activity for word in ['menuisier', 'menuiserie', 'bois', 'fenêtre']):
+        return 'Menuisier'
+    if any(word in activity for word in ['peintre', 'peinture', 'décoration']):
+        return 'Peintre'
+    if any(word in activity for word in ['carreleur', 'carrelage', 'faïence']):
+        return 'Carreleur'
+    if any(word in activity for word in ['serrurier', 'serrurerie', 'métallerie']):
+        return 'Serrurier'
+    
+    # Capitaliser première lettre si pas de correspondance
+    return activity.title()
+
+def normalize_phone(phone_raw):
+    """Normalise téléphone au format E.164 français"""
+    if not phone_raw:
+        return None
+    
+    # Nettoyer : garder que les chiffres
+    phone = re.sub(r'\D', '', str(phone_raw))
+    
+    if not phone:
+        return None
+    
+    # Normalisation selon patterns français
+    if phone.startswith('33'):
+        phone = '+' + phone
+    elif phone.startswith('0'):
+        phone = '+33' + phone[1:]
+    elif len(phone) == 9:
+        phone = '+33' + phone
+    elif len(phone) == 10 and phone.startswith('0'):
+        phone = '+33' + phone[1:]
+    
+    # Validation longueur finale
+    if len(phone) < 10 or len(phone) > 15:
+        return None
+        
+    return phone
+
+def extract_city_from_address(address):
+    """Extrait la ville depuis une adresse complète"""
+    if not address:
+        return ""
+    
+    # Patterns pour extraire ville depuis adresse Google Maps
+    patterns = [
+        r'(\d{5})\s+([A-Z][a-zÀ-ÿ\s\-\']+)(?:,|$)',  # 44000 Nantes
+        r'([A-Z][a-zÀ-ÿ\s\-\']+),?\s+(\d{5})',       # Nantes, 44000  
+        r'([A-Z][a-zÀ-ÿ\s\-\']+)(?:,\s*France)?$',   # Nantes, France
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, address)
+        if match:
+            # Si le pattern contient un code postal, prendre le nom de ville
+            if len(match.groups()) == 2:
+                if match.group(1).isdigit():
+                    return match.group(2).strip()
+                else:
+                    return match.group(1).strip()
+            else:
+                return match.group(1).strip()
+    
+    # Fallback : prendre le premier mot capitalisé
+    words = address.split(',')
+    for word in words:
+        word = word.strip()
+        if word and word[0].isupper() and not word.isdigit():
+            return word
+    
+    return address.split(',')[0].strip() if ',' in address else address.strip()
+
+def normalize_data(raw_data, query, debug=False):
+    """Normalise les données selon le schéma unifié Naosite"""
+    
+    # Normalisation téléphone
+    phone = normalize_phone(raw_data.get('phone', ''))
+    
+    # Extraction ville propre
+    address = raw_data.get('address', '') or ''
+    city = extract_city_from_address(address)
+    
+    # Nom entreprise nettoyé
+    name = (raw_data.get('name', '') or '').strip()
+    if len(name) > 150:  # Limite raisonnable
+        name = name[:150] + '...'
+    
+    # Activité standardisée (utilise query si pas d'activité spécifique)
+    activity = raw_data.get('activity') or query or ''
+    normalized_activity = normalize_activity(activity)
+    
+    # Calculs dérivés
+    normalized_phone_digits = phone.replace('+', '').replace('-', '').replace(' ', '') if phone else ''
+    mobile_detected = bool(phone and re.match(r'^\+33[67]', phone))
+    
+    # Extraction code postal
+    postal_match = re.search(r'\b(\d{5})\b', address)
+    city_code = postal_match.group(1) if postal_match else None
+    
+    result = {
+        "name": name,
+        "activity": normalized_activity,
+        "phone": phone,
+        "email": None,  # Google Maps rarement emails
+        "address": address,
+        "city": city,
+        "website": None,  # Toujours null (critère de filtrage)
+        "source": "google_maps",
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+        
+        # Champs calculés pour le scoring
+        "normalized_phone": normalized_phone_digits,
+        "mobile_detected": mobile_detected,
+        "city_code": city_code,
+        
+        # Métadonnées pour debug
+        "raw_data": raw_data if debug else None
     }
+    
+    # Nettoyer les None si pas debug
+    if not debug:
+        result = {k: v for k, v in result.items() if v is not None}
+    
+    return result
 
+def scrape_maps(query, city="", limit=50, debug=False):
+    """Scraper Google Maps avec anti-détection et harmonisation"""
+    results = []
+    
+    log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
+    
+    with sync_playwright() as p:
+        # Configuration navigateur
+        browser_args = [
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-extensions',
+            '--no-first-run',
+            '--disable-default-apps'
+        ]
+        
+        # Configuration proxy si disponible
+        browser_kwargs = {'headless': True, 'args': browser_args}
+        
+        if PROXY_USER and PROXY_PASS and PROXY_HOST:
+            proxy_config = {
+                "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+                "username": PROXY_USER,
+                "password": PROXY_PASS
+            }
+            browser_kwargs['proxy'] = proxy_config
+            log_info(f"Proxy configuré: {PROXY_HOST}:{PROXY_PORT}", debug)
+        
+        try:
+            browser = p.chromium.launch(**browser_kwargs)
+        except Exception as e:
+            log_error(f"Erreur lancement navigateur: {e}")
+            return []
+        
+        # Context avec user agent réaliste
+        context = browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+        
+        page = context.new_page()
+        
+        try:
+            # Construction URL de recherche
+            search_query = f"{query} {city}".strip()
+            maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
+            
+            log_info(f"Accès URL: {maps_url}", debug)
+            
+            # Navigation avec timeout
+            page.goto(maps_url, wait_until='networkidle', timeout=30000)
+            
+            # Attente chargement initial
+            time.sleep(random.uniform(3, 5))
+            
+            # Scroll pour charger plus de résultats
+            scroll_attempts = 0
+            max_scrolls = min(10, (limit // 10) + 2)  # Adaptive selon limite
+            
+            for scroll in range(max_scrolls):
+                try:
+                    # Scroll dans la liste des résultats
+                    page.evaluate("""
+                        const sidebar = document.querySelector('[role="main"]');
+                        if (sidebar) {
+                            sidebar.scrollTop += 1000;
+                        } else {
+                            window.scrollBy(0, 1000);
+                        }
+                    """)
+                    
+                    time.sleep(random.uniform(1.5, 3))
+                    scroll_attempts += 1
+                    
+                    log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
+                    
+                except Exception as e:
+                    log_error(f"Erreur scroll {scroll}: {e}")
+                    break
+            
+            # Extraction des résultats
+            log_info("Début extraction données", debug)
+            
+            # Sélecteurs Google Maps (multiples pour robustesse)
+            business_selectors = [
+                '[data-result-index]',
+                '[role="article"]',
+                '.Nv2PK',
+                '[jsaction*="mouseover"]'
+            ]
+            
+            businesses = []
+            for selector in business_selectors:
+                try:
+                    businesses = page.query_selector_all(selector)
+                    if businesses:
+                        log_info(f"Trouvé {len(businesses)} éléments avec sélecteur {selector}", debug)
+                        break
+                except:
+                    continue
+            
+            if not businesses:
+                log_error("Aucun élément business trouvé sur la page")
+                return []
+            
+            extracted_count = 0
+            
+            for idx, business in enumerate(businesses):
+                if extracted_count >= limit:
+                    break
+                
+                try:
+                    # Extraction nom
+                    name_selectors = [
+                        'h3', '.fontHeadlineSmall', '.qBF1Pd', 
+                        '[role="button"] span', '.OSrXXb'
+                    ]
+                    
+                    name = ""
+                    for name_sel in name_selectors:
+                        try:
+                            name_el = business.query_selector(name_sel)
+                            if name_el:
+                                name = name_el.inner_text().strip()
+                                if name and len(name) > 2:
+                                    break
+                        except:
+                            continue
+                    
+                    if not name:
+                        continue
+                    
+                    # Vérification absence site web (critère principal)
+                    website_indicators = [
+                        '[aria-label*="Site Web"]',
+                        '[aria-label*="Website"]', 
+                        '[data-value="Website"]',
+                        'a[href^="http"]:not([href*="google"]):not([href*="maps"])'
+                    ]
+                    
+                    has_website = False
+                    for indicator in website_indicators:
+                        try:
+                            if business.query_selector(indicator):
+                                has_website = True
+                                break
+                        except:
+                            continue
+                    
+                    if has_website:
+                        log_info(f"Ignoré {name}: site web détecté", debug)
+                        continue
+                    
+                    # Extraction téléphone
+                    phone_selectors = [
+                        '[aria-label*="Téléphone"]',
+                        '[aria-label*="Phone"]',
+                        '[data-value="Phone"]',
+                        '.rogA2c'
+                    ]
+                    
+                    phone = ""
+                    for phone_sel in phone_selectors:
+                        try:
+                            phone_el = business.query_selector(phone_sel)
+                            if phone_el:
+                                # Téléphone peut être dans aria-label ou text
+                                phone = phone_el.get_attribute('aria-label') or phone_el.inner_text()
+                                if phone and any(c.isdigit() for c in phone):
+                                    break
+                        except:
+                            continue
+                    
+                    # Extraction adresse
+                    address_selectors = [
+                        '[data-value="Address"]',
+                        '.W4Efsd:nth-of-type(2)',
+                        '.rogA2c .fontBodyMedium'
+                    ]
+                    
+                    address = ""
+                    for addr_sel in address_selectors:
+                        try:
+                            addr_el = business.query_selector(addr_sel)
+                            if addr_el:
+                                address = addr_el.inner_text().strip()
+                                if address and len(address) > 5:
+                                    break
+                        except:
+                            continue
+                    
+                    # Construction données brutes
+                    raw_data = {
+                        'name': name,
+                        'activity': query,  # Utilise la query comme activité de base
+                        'phone': phone,
+                        'address': address,
+                        'index': idx
+                    }
+                    
+                    # Normalisation selon schéma unifié
+                    normalized = normalize_data(raw_data, query, debug)
+                    
+                    # Validation données minimales
+                    if normalized['name'] and (normalized['phone'] or normalized['address']):
+                        results.append(normalized)
+                        extracted_count += 1
+                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
+                    
+                except Exception as e:
+                    log_error(f"Erreur extraction business {idx}: {e}")
+                    continue
+            
+            log_info(f"Extraction terminée: {len(results)} résultats valides", debug)
+            
+        except Exception as e:
+            log_error(f"Erreur scraping Maps: {e}")
+        finally:
+            try:
+                browser.close()
+            except:
+                pass
+    
+    return results
 
-def _build_query(activity: str, city: str | None) -> str:
-    return f"{activity} {city}" if city else activity
-
-
-async def _scroll_results(page: Page) -> None:
-    idle = 0
-    last_count = 0
-    while True:
-        await page.mouse.wheel(0, 4000)
-        await page.wait_for_timeout(SCROLL_PAUSE_SEC * 1000)
-        cards = await page.query_selector_all("div[role='article']")
-        count = len(cards)
-        if count == last_count:
-            idle += 1
-            if idle >= MAX_IDLE:
-                break
-        else:
-            idle = 0
-            last_count = count
-
-
-def _has_website(card_html: str) -> bool:
-    return "Website" in card_html or "Site Web" in card_html
-
-
-async def _extract_cards(page: Page) -> Generator[Dict[str, Any], None, None]:
-    cards = await page.query_selector_all("div[role='article']")
-    for card in cards:
-        html = await card.inner_html()
-        if _has_website(html):
-            continue
-        name = await card.get_attribute("aria-label") or ""
-        maps_url = await card.eval_on_selector("a", "e=>e.href")
-        plus_code = await card.eval_on_selector("a", "e=>e.getAttribute('data-result-id')")
-        yield {
-            "name": name.strip(),
-            "phone": None,
-            "plus_code": plus_code,
-            "maps_url": maps_url,
-            "source": "google_maps",
-        }
-
-
-async def scrape(activity: str, city: str | None = None):
-    query = _build_query(activity, city)
-    url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
-
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, proxy=_proxy_config())
-        ctx = await browser.new_context()
-        page = await ctx.new_page()
-        await page.goto(url, timeout=60000)
-        await _scroll_results(page)
-        async for card in _extract_cards(page):
-            print(json.dumps(card, ensure_ascii=False))
-        await browser.close()
-
+def main():
+    """Point d'entrée principal"""
+    parser = argparse.ArgumentParser(description='Google Maps Scraper v1.5 avec harmonisation')
+    parser.add_argument('query', help='Activité à rechercher (ex: "plombier")')
+    parser.add_argument('--city', default='', help='Ville de recherche (ex: "Nantes")')
+    parser.add_argument('--limit', type=int, default=50, help='Limite de résultats (défaut: 50)')
+    parser.add_argument('--debug', action='store_true', help='Mode debug avec logs détaillés')
+    
+    args = parser.parse_args()
+    
+    # Validation des arguments
+    if not args.query.strip():
+        log_error("Query ne peut pas être vide")
+        sys.exit(1)
+    
+    if args.limit <= 0 or args.limit > 1000:
+        log_error("Limit doit être entre 1 et 1000")
+        sys.exit(1)
+    
+    # Lancement du scraping
+    try:
+        start_time = time.time()
+        results = scrape_maps(args.query, args.city, args.limit, args.debug)
+        duration = time.time() - start_time
+        
+        # Logs de résumé
+        if args.debug:
+            log_info(f"Scraping terminé en {duration:.2f}s: {len(results)} résultats", True)
+            
+            # Stats par type de téléphone
+            mobile_count = sum(1 for r in results if r.get('mobile_detected'))
+            log_info(f"Téléphones mobiles: {mobile_count}/{len(results)}", True)
+            
+            # Stats par ville
+            cities = {}
+            for r in results:
+                city = r.get('city', 'Inconnu')
+                cities[city] = cities.get(city, 0) + 1
+            log_info(f"Répartition villes: {dict(list(cities.items())[:5])}", True)
+        
+        # Output JSON Lines pour n8n
+        for result in results:
+            print(json.dumps(result, ensure_ascii=False))
+            
+    except KeyboardInterrupt:
+        log_info("Arrêt demandé par utilisateur", args.debug)
+        sys.exit(0)
+    except Exception as e:
+        log_error(f"Erreur fatale: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("activity", help="Activité à rechercher, ex.: plombier")
-    parser.add_argument("--city", help="Ville (facultatif)")
-    args = parser.parse_args()
-
-    asyncio.run(scrape(args.activity, args.city))
+    main()
