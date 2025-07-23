@@ -304,27 +304,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-    
-        
-        # Logs de résumé
-        if args.debug:
-            log_info(f"Scraping terminé en {duration:.2f}s: {len(results)} résultats", True)
-            
-            # Stats par type de téléphone
-            mobile_count = sum(1 for r in results if r.get('mobile_detected'))
-            log_info(f"Téléphones mobiles: {mobile_count}/{len(results)}", True)
-            
-            # Stats par ville
-            cities = {}
-            for r in results:
-                city = r.get('city', 'Inconnu')
-                cities[city] = cities.get(city, 0) + 1
-            log_info(f"Répartition villes: {dict(list(cities.items())[:5])}", True)
-        
-        # Output JSON Lines pour n8n
-        for result in results:
-            print(json.dumps(result, ensure_ascii=False))
             
     except KeyboardInterrupt:
         log_info("Arrêt demandé par utilisateur", args.debug)
