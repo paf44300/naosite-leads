@@ -204,16 +204,16 @@ def scrape_maps(query, city="", limit=50, debug=False):
         ]
 
         # 2. Lancement du navigateur via le Backbone Connection Webshare EN CLAIR
-        browser = p.chromium.launch(
-            headless=True,
-            args=browser_args,
-            proxy={
-                "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
-                "username": PROXY_USER,
-                "password": PROXY_PASS
-            }
-        )
-        log_info(f"Backbone proxy configuré: {PROXY_USER}@{PROXY_HOST}:{PROXY_PORT}", debug)
+    browser = p.chromium.launch(
+    headless=True,
+    args=browser_args,
+    proxy={
+        "server":   "http://p.webshare.io:80",
+        "username": "xftpfnvt-1",
+        "password": "yulnmnbiq66j"
+    }
+)
+log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
 
         
         # Context avec user agent réaliste
