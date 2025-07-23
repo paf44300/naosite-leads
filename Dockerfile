@@ -11,7 +11,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         wget jq bc tzdata ca-certificates \
-        python3 python3-pip python3-venv; \
+        python3 python3-pip python3-venv python3-full; \
     ln -sf /usr/bin/python3 /usr/bin/python; \
     rm -rf /var/lib/apt/lists/*
 
@@ -22,9 +22,9 @@ RUN npm install -g n8n@1.102.4 playwright@1.54.1 && \
     npx playwright install --with-deps chromium
 
 # ----------------------------------
-# Playwright Python uniquement (lib)
+# Playwright Python avec fix environnement
 # ----------------------------------
-RUN pip install playwright
+RUN pip install --break-system-packages playwright
 
 # ---------------------------------------
 # Copie les scrapers Python dans /work
