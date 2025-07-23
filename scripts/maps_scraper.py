@@ -213,9 +213,8 @@ def scrape_maps(query, city="", limit=50, debug=False):
                 "password": "yulnmnbiq66j"
             }
         )
-            log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
+        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
 
-        
         # Context avec user agent réaliste
         context = browser.new_context(
             viewport={'width': 1366, 'height': 768},
