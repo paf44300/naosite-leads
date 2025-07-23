@@ -21,7 +21,7 @@ except ImportError:
     sys.exit(1)
 
 # Configuration proxy Webshare
-PROXY_HOST = os.getenv("proxy.webshare.io")
+PROXY_HOST = os.getenv("p.webshare.io")
 PROXY_PORT = os.getenv("80")
 PROXY_USER = os.getenv("xftpfnvt")
 PROXY_PASS = os.getenv("yulnmnbiq66j")
@@ -195,13 +195,16 @@ def scrape_maps(query, city="", limit=50, debug=False):
     with sync_playwright() as p:
         # Configuration navigateur
         browser_args = [
-            '--no-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-extensions',
-            '--no-first-run',
-            '--disable-default-apps'
-        ]
+           browser = p.chromium.launch(
+        headless=True,
+        args=browser_args,
+        proxy={
+            "server": f"http://{PROXY_SERVER}:{PROXY_PORT}",
+            "username": PROXY_USER,
+            "password": PROXY_PASS
+        }
+    )
+    log_info(f"Backbone proxy configuré: {PROXY_USER}@{PROXY_SERVER}:{PROXY_PORT}", debug)
         
         # Configuration proxy si disponible
         browser_kwargs = {'headless': True, 'args': browser_args}
@@ -391,7 +394,7 @@ def scrape_maps(query, city="", limit=50, debug=False):
                     normalized = normalize_data(raw_data, query, debug)
                     
                     # Validation données minimales
-                    if normalized['name'] and (normalized['phone'] or normalized['address']):
+                    if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
                         results.append(normalized)
                         extracted_count += 1
                         log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
