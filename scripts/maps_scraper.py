@@ -192,7 +192,7 @@ def scrape_maps(query, city="", limit=50, debug=False):
     
     log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
     
-     with sync_playwright() as p:
+    with sync_playwright() as p:
         # 1. Configuration des args Chrome
         browser_args = [
             '--no-sandbox',
