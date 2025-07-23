@@ -184,226 +184,92 @@ def normalize_data(raw_data, query, search_city="", debug=False): # Ajout de sea
     return result
 
 def scrape_maps(query, city="", limit=50, debug=False):
-    """Scraper Google Maps avec anti-détection et harmonisation"""
+    """Scraper Google Maps avec une recherche de sélecteurs robuste."""
     results = []
-    
     log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
-    
-    with sync_playwright() as p:
-        # 1. Configuration des args Chrome
-        browser_args = [
-            '--no-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-extensions',
-            '--no-first-run',
-            '--disable-default-apps'
-        ]
 
-        # 2. Lancement du navigateur via le Backbone Connection Webshare EN CLAIR
-        browser = p.chromium.launch(
-            headless=True,
-            args=browser_args,
-            proxy={
-                "server":   "http://p.webshare.io:80",
-                "username": "xftpfnvt-1",
-                "password": "yulnmnbiq66j"
-            }
-        )
-        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+            context = browser.new_context(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+            page = context.new_page()
 
-        # Context avec user agent réaliste
-        context = browser.new_context(
-            viewport={'width': 1366, 'height': 768},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
-        
-        page = context.new_page()
-        
-        try:
-            # Construction URL de recherche
             search_query = f"{query} {city}".strip()
             maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
-            
             log_info(f"Accès URL: {maps_url}", debug)
-            
-            # Navigation avec timeout
-            page.goto(maps_url, wait_until='networkidle', timeout=30000)
-            
-            # Attente chargement initial
-            time.sleep(random.uniform(3, 5))
-            
-            # Scroll pour charger plus de résultats
-            scroll_attempts = 0
-            max_scrolls = min(10, (limit // 10) + 2)  # Adaptive selon limite
-            
-            for scroll in range(max_scrolls):
-                try:
-                    # Scroll dans la liste des résultats
-                    page.evaluate("""
-                        const sidebar = document.querySelector('[role="main"]');
-                        if (sidebar) {
-                            sidebar.scrollTop += 1000;
-                        } else {
-                            window.scrollBy(0, 1000);
-                        }
-                    """)
-                    
-                    time.sleep(random.uniform(1.5, 3))
-                    scroll_attempts += 1
-                    
-                    log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
-                    
-                except Exception as e:
-                    log_error(f"Erreur scroll {scroll}: {e}")
-                    break
-            
-            # Extraction des résultats
-            log_info("Début extraction données", debug)
-            
-            # Sélecteurs Google Maps (multiples pour robustesse)
+
+            page.goto(maps_url, wait_until='domcontentloaded', timeout=60000)
+            page.wait_for_selector('div[role="feed"]', timeout=30000)
+            time.sleep(random.uniform(2, 4))
+
+            # Scroll pour charger la page
+            for _ in range(min(5, (limit // 10))):
+                main_feed = page.query_selector('div[role="feed"]')
+                if main_feed:
+                    page.evaluate('(feed) => feed.scrollTop = feed.scrollHeight', main_feed)
+                else:
+                    # FIX: This line must be indented under the 'else'
+                    page.mouse.wheel(0, 15000)
+                time.sleep(random.uniform(1, 2))
+
+            # Liste de sélecteurs potentiels pour les fiches business
             business_selectors = [
-                '[data-result-index]',
-                '[role="article"]',
-                '.Nv2PK',
-                '[jsaction*="mouseover"]'
+                'div[role="feed"] > div > div[role="article"]',
+                'div[role="article"]',
+                'div[jsaction*="mouseover.search_result"]',
             ]
-            
+
             businesses = []
             for selector in business_selectors:
-                try:
-                    businesses = page.query_selector_all(selector)
-                    if businesses:
-                        log_info(f"Trouvé {len(businesses)} éléments avec sélecteur {selector}", debug)
-                        break
-                except:
-                    continue
-            
+                businesses = page.query_selector_all(selector)
+                if businesses:
+                    log_info(f"Trouvé {len(businesses)} éléments avec le sélecteur: '{selector}'", debug)
+                    break
+
             if not businesses:
-                log_error("Aucun élément business trouvé sur la page")
+                log_error("Aucun élément business trouvé sur la page avec les sélecteurs actuels.")
+                browser.close()
                 return []
-            
+
             extracted_count = 0
-            
             for idx, business in enumerate(businesses):
                 if extracted_count >= limit:
                     break
-                
                 try:
-                    # Extraction nom
-                    name_selectors = [
-                        'h3', '.fontHeadlineSmall', '.qBF1Pd', 
-                        '[role="button"] span', '.OSrXXb'
-                    ]
-                    
-                    name = ""
-                    for name_sel in name_selectors:
-                        try:
-                            name_el = business.query_selector(name_sel)
-                            if name_el:
-                                name = name_el.inner_text().strip()
-                                if name and len(name) > 2:
-                                    break
-                        except:
-                            continue
-                    
+                    name_el = business.query_selector('h3, .fontHeadlineSmall, [role="heading"], .qBF1Pd')
+                    name = name_el.inner_text().strip() if name_el else ""
                     if not name:
                         continue
                     
-                    # Vérification absence site web (critère principal)
-                    website_indicators = [
-                        '[aria-label*="Site Web"]',
-                        '[aria-label*="Website"]', 
-                        '[data-value="Website"]',
-                        'a[href^="http"]:not([href*="google"]):not([href*="maps"])'
-                    ]
-                    
-                    has_website = False
-                    for indicator in website_indicators:
-                        try:
-                            if business.query_selector(indicator):
-                                has_website = True
-                                break
-                        except:
-                            continue
-                    
+                    has_website = business.query_selector('[data-value="Website"]')
                     if has_website:
                         log_info(f"Ignoré {name}: site web détecté", debug)
                         continue
-                    
-                  # --- NOUVELLE LOGIQUE D'EXTRACTION ADRESSE ET TÉLÉPHONE ---
-                    
-                    # 1. On récupère tout le bloc d'infos textuelles du business
-                    # Ce sélecteur est plus générique et cible le conteneur d'infos
-                    info_block_el = business.query_selector('.fontBodyMedium')
-                    info_text = info_block_el.inner_text().strip() if info_block_el else ""
 
-                    phone = ""
-                    address = ""
-
-                    # 2. On cherche un numéro de téléphone dans ce bloc
-                    phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', info_text)
-                    if phone_match:
-                        phone = phone_match.group(1)
-                        # On nettoie le bloc d'infos du téléphone pour isoler l'adresse
-                        info_text = info_text.replace(phone, '').strip()
-
-                    # 3. On nettoie ce qui reste pour obtenir l'adresse
-                    # On supprime les horaires et autres indicateurs comme "·"
-                    address_cleaned = re.sub(r'^(Open|Closes|Ouvert|Ferme)[\s\S]*?·', '', info_text)
-                    address_cleaned = address_cleaned.strip(' ·-').strip()
-                    
-                    # S'il reste quelque chose qui ressemble à une adresse, on la prend
-                    if len(address_cleaned) > 5:
-                         address = address_cleaned
-                    else: # Fallback sur les anciens sélecteurs si la nouvelle méthode échoue
-                        # --- NOUVELLE LOGIQUE D'EXTRACTION ADRESSE ---
-                    
-                    # 1. On récupère tout le texte du bloc business
                     full_text = business.inner_text()
-                    address = ""
+                    phone, address = "", ""
+                    
+                    phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', full_text)
+                    if phone_match: phone = phone_match.group(1)
 
-                    # 2. On extrait l'adresse avec une regex qui cible un format d'adresse
-                    # Cherche : un numéro, un type de voie (Rue, Quai, etc.), et le reste de la ligne.
-                    address_match = re.search(
-                        r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin|Route|Cours|Voie|Passage|Lieu-dit)[\s\S]*?)(?:\n|$)',
-                        full_text
-                    )
-                    if address_match:
-                        # On prend le résultat et on nettoie les espaces superflus
-                        address = address_match.group(1).strip()
+                    address_match = re.search(r'(\d+[\s,]+(?:Quai|Rue|Boulevard|Avenue|Allée|Place|Impasse|Chemin)[\s\S]*?)(?:\n|$)', full_text)
+                    if address_match: address = address_match.group(1).strip()
                     
-                    # Construction données brutes
-                    raw_data = {
-                        'name': name,
-                        'activity': query,  # Utilise la query comme activité de base
-                        'phone': phone,
-                        'address': address,
-                        'index': idx
-                    }
-                    
-                    # Normalisation selon schéma unifié
+                    raw_data = {'name': name, 'activity': query, 'phone': phone, 'address': address}
                     normalized = normalize_data(raw_data, query, city, debug)
-                    
-                    # Validation données minimales
+
                     if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
                         results.append(normalized)
                         extracted_count += 1
-                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
-                    
                 except Exception as e:
-                    log_error(f"Erreur extraction business {idx}: {e}")
+                    log_error(f"Erreur extraction business {idx} ({name}): {e}")
                     continue
             
             log_info(f"Extraction terminée: {len(results)} résultats valides", debug)
+            browser.close()
             
-        except Exception as e:
-            log_error(f"Erreur scraping Maps: {e}")
-        finally:
-            try:
-                browser.close()
-            except:
-                pass
+    except Exception as e:
+        log_error(f"Erreur majeure dans scrape_maps: {e}")
     
     return results
 
