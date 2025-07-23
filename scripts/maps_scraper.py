@@ -26,6 +26,17 @@ PROXY_PORT = os.getenv("80")
 PROXY_USER = os.getenv("xftpfnvt")
 PROXY_PASS = os.getenv("yulnmnbiq66j")
 
+def extract_address(address_raw):
+    m = re.search(r"(?:Plumber|Plombier) · ([^\n,]+)", address_raw)
+    if m:
+        return m.group(1).strip()
+    return address_raw
+
+def extract_city(address_clean):
+    if ',' in address_clean:
+        return address_clean.split(',')[-1].strip()
+    return ""
+    
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
     print(f"[MAPS_SCRAPER ERROR] {message}", file=sys.stderr)
