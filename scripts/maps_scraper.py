@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Google Maps Scraper v2.0 - Corrigé avec offset et meilleure extraction
+Google Maps Scraper v3.0 - Extraction multiple corrigée
 Usage: python maps_scraper.py "plombier" --city "Nantes" --limit 5 --offset 10
 """
 
@@ -185,7 +185,8 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
     """
     results = []
     
-    log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}, offset={offset}", debug)
+    log_info(f"=== DÉMARRAGE SCRAPING MAPS ===", debug)
+    log_info(f"Query: '{query}', City: '{city}', Limit: {limit}, Offset: {offset}", debug)
     
     with sync_playwright() as p:
         browser_args = [
@@ -229,7 +230,7 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
             search_query = f"{query} {city}".strip()
             maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
             
-            log_info(f"Accès URL: {maps_url}", debug)
+            log_info(f"URL Maps: {maps_url}", debug)
             
             # Navigation avec timeout
             page.goto(maps_url, wait_until='networkidle', timeout=30000)
@@ -239,54 +240,97 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
             
             # Accepter cookies si présent
             try:
-                accept_button = page.query_selector('button:has-text("Tout accepter")')
-                if accept_button:
-                    accept_button.click()
-                    time.sleep(1)
-                    log_info("Cookies acceptés", debug)
+                accept_buttons = page.query_selector_all('button')
+                for btn in accept_buttons:
+                    text = btn.inner_text().lower()
+                    if 'accepter' in text or 'accept' in text:
+                        btn.click()
+                        time.sleep(1)
+                        log_info("Cookies acceptés", debug)
+                        break
             except:
                 pass
             
-            # Scroll pour charger plus de résultats (incluant l'offset)
-            total_needed = limit + offset
-            scroll_attempts = 0
-            max_scrolls = min(15, (total_needed // 5) + 3)
+            # Attendre que les résultats soient visibles
+            try:
+                page.wait_for_selector('[role="main"]', timeout=5000)
+                log_info("Zone de résultats trouvée", debug)
+            except:
+                log_error("Zone de résultats non trouvée")
             
-            for scroll in range(max_scrolls):
+            # Prendre une capture d'écran pour debug si nécessaire
+            if debug:
+                page.screenshot(path="maps_debug.png")
+                log_info("Screenshot sauvegardé: maps_debug.png", debug)
+            
+            # Scroll pour charger plus de résultats
+            total_needed = limit + offset
+            scroll_count = 0
+            last_count = 0
+            no_change_count = 0
+            max_scrolls = min(20, (total_needed // 3) + 5)
+            
+            log_info(f"Début scrolling pour charger {total_needed} résultats", debug)
+            
+            while scroll_count < max_scrolls:
                 try:
+                    # Compter les résultats actuels
+                    current_results = page.query_selector_all('[role="article"]')
+                    current_count = len(current_results)
+                    
+                    log_info(f"Scroll {scroll_count + 1}: {current_count} résultats visibles", debug)
+                    
+                    # Si on a assez de résultats, arrêter
+                    if current_count >= total_needed:
+                        log_info(f"Assez de résultats chargés: {current_count}", debug)
+                        break
+                    
+                    # Si aucun changement après plusieurs scrolls, arrêter
+                    if current_count == last_count:
+                        no_change_count += 1
+                        if no_change_count >= 3:
+                            log_info(f"Plus de résultats à charger (stable à {current_count})", debug)
+                            break
+                    else:
+                        no_change_count = 0
+                    
+                    last_count = current_count
+                    
                     # Scroll dans la liste des résultats
                     page.evaluate("""
-                        const sidebar = document.querySelector('[role="main"]') || 
-                                       document.querySelector('.m6QErb') ||
-                                       document.querySelector('[aria-label*="Résultats"]');
-                        if (sidebar) {
-                            sidebar.scrollTop += 1000;
-                        } else {
-                            window.scrollBy(0, 1000);
+                        const scrollables = document.querySelectorAll('[role="main"], .m6QErb, [aria-label*="Résultats"]');
+                        let scrolled = false;
+                        for (const element of scrollables) {
+                            if (element && element.scrollHeight > element.clientHeight) {
+                                element.scrollTop += 800;
+                                scrolled = true;
+                                break;
+                            }
+                        }
+                        if (!scrolled) {
+                            window.scrollBy(0, 800);
                         }
                     """)
                     
-                    time.sleep(random.uniform(1.5, 2.5))
-                    scroll_attempts += 1
-                    
-                    log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
+                    time.sleep(random.uniform(2, 3))
+                    scroll_count += 1
                     
                 except Exception as e:
-                    log_error(f"Erreur scroll {scroll}: {e}")
+                    log_error(f"Erreur scroll {scroll_count}: {e}")
                     break
             
             # Attendre un peu après le dernier scroll
             time.sleep(2)
             
             # Extraction des résultats
-            log_info("Début extraction données", debug)
+            log_info("=== DÉBUT EXTRACTION DES DONNÉES ===", debug)
             
-            # Sélecteurs Google Maps (multiples pour robustesse)
+            # Sélecteurs Google Maps mis à jour
             business_selectors = [
-                'div[role="article"]',
-                'div[jsaction*="mouseover"]:has(a[aria-label])',
-                '.Nv2PK',
-                '[data-result-index]'
+                '[role="article"]',  # Sélecteur principal actuel
+                'div[jsaction*="mouseover"]:has(a[aria-label])',  # Fallback
+                '.Nv2PK',  # Ancien sélecteur
+                'div[data-index]'  # Autre fallback
             ]
             
             businesses = []
@@ -294,18 +338,24 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
                 try:
                     businesses = page.query_selector_all(selector)
                     if businesses:
-                        log_info(f"Trouvé {len(businesses)} éléments avec sélecteur {selector}", debug)
+                        log_info(f"✅ Trouvé {len(businesses)} éléments avec sélecteur: {selector}", debug)
                         break
                 except:
                     continue
             
             if not businesses:
-                log_error("Aucun élément business trouvé sur la page")
+                log_error("❌ Aucun élément business trouvé ! Vérifier les sélecteurs CSS")
+                # Essayer de récupérer le HTML pour debug
+                if debug:
+                    html_snippet = page.evaluate('document.querySelector("[role=\\"main\\"]")?.innerHTML?.substring(0, 500)')
+                    log_error(f"HTML snippet: {html_snippet}")
                 return []
             
             # Extraction avec gestion de l'offset
             extracted_count = 0
             skipped_count = 0
+            
+            log_info(f"Traitement de {len(businesses)} businesses (offset: {offset})", debug)
             
             for idx, business in enumerate(businesses):
                 # Skip les premiers résultats selon l'offset
@@ -317,26 +367,45 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
                     break
                 
                 try:
-                    # Extraction nom - sélecteurs multiples
-                    name_selectors = [
-                        '.fontHeadlineSmall span',
-                        '.qBF1Pd',
-                        'h3',
-                        '[role="button"] span:not([aria-hidden])'
-                    ]
+                    # Récupérer tout le texte du business pour debug
+                    business_text = business.inner_text()
+                    log_info(f"\n--- Business {idx} ---", debug)
+                    log_info(f"Texte complet: {business_text[:200]}...", debug)
                     
+                    # Extraction nom - méthode améliorée
                     name = ""
-                    for name_sel in name_selectors:
-                        try:
-                            name_el = business.query_selector(name_sel)
-                            if name_el:
-                                name = name_el.inner_text().strip()
-                                if name and len(name) > 2 and not name.startswith('·'):
-                                    break
-                        except:
-                            continue
+                    
+                    # Méthode 1: Via aria-label des liens
+                    try:
+                        link = business.query_selector('a[aria-label]')
+                        if link:
+                            name = link.get_attribute('aria-label') or ''
+                            log_info(f"Nom via aria-label: {name}", debug)
+                    except:
+                        pass
+                    
+                    # Méthode 2: Texte du titre
+                    if not name:
+                        name_selectors = [
+                            '.fontHeadlineSmall',
+                            '.qBF1Pd',
+                            'span.OSrXXb',
+                            'h3'
+                        ]
+                        
+                        for name_sel in name_selectors:
+                            try:
+                                name_el = business.query_selector(name_sel)
+                                if name_el:
+                                    name = name_el.inner_text().strip()
+                                    if name and len(name) > 2:
+                                        log_info(f"Nom via {name_sel}: {name}", debug)
+                                        break
+                            except:
+                                continue
                     
                     if not name:
+                        log_info(f"Pas de nom trouvé pour business {idx}", debug)
                         continue
                     
                     # Vérification absence site web (critère principal)
@@ -352,75 +421,34 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
                         try:
                             if business.query_selector(indicator):
                                 has_website = True
+                                log_info(f"Site web détecté avec: {indicator}", debug)
                                 break
                         except:
                             continue
                     
                     if has_website:
-                        log_info(f"Ignoré {name}: site web détecté", debug)
+                        log_info(f"❌ Ignoré {name}: site web détecté", debug)
                         continue
                     
-                    # Extraction des informations - Méthode améliorée
-                    info_text = ""
+                    # Extraction des infos depuis le texte complet
+                    lines = business_text.split('\n')
                     phone = ""
                     address = ""
                     
-                    # Méthode 1 : Chercher le conteneur d'infos
-                    info_selectors = [
-                        '.W4Efsd',
-                        '.fontBodyMedium',
-                        '[class*="section-info"]'
-                    ]
-                    
-                    for info_sel in info_selectors:
-                        try:
-                            info_elements = business.query_selector_all(info_sel)
-                            for info_el in info_elements:
-                                text = info_el.inner_text().strip()
-                                if text:
-                                    info_text += " " + text
-                        except:
-                            continue
-                    
-                    # Extraction téléphone depuis le texte complet
-                    phone_patterns = [
-                        r'(?:(?:\+33|0)\s?[1-9](?:\s?\d{2}){4})',
-                        r'(?:\d{2}[\s\.\-]?){5}'
-                    ]
-                    
-                    for pattern in phone_patterns:
-                        phone_match = re.search(pattern, info_text)
-                        if phone_match:
-                            phone = phone_match.group(0)
-                            break
-                    
-                    # Extraction adresse - chercher après le séparateur
-                    if '·' in info_text:
-                        parts = info_text.split('·')
-                        # L'adresse est généralement après le premier ou deuxième séparateur
-                        for i in range(1, len(parts)):
-                            part = parts[i].strip()
-                            # Vérifier si c'est une adresse (contient des chiffres ou des mots clés)
-                            if (re.search(r'\d{5}', part) or 
-                                any(word in part.lower() for word in ['rue', 'avenue', 'boulevard', 'place', 'nantes', 'saint', 'france'])):
-                                address = part
-                                # Nettoyer l'adresse du téléphone si présent
-                                if phone and phone in address:
-                                    address = address.replace(phone, '').strip()
-                                break
-                    
-                    # Si pas d'adresse trouvée, chercher spécifiquement
-                    if not address:
-                        address_patterns = [
-                            r'(\d+[\s\w\-\']+,?\s*\d{5}\s*[A-Za-zÀ-ÿ\s\-\']+)',
-                            r'(\d{5}\s*[A-Za-zÀ-ÿ\s\-\']+)'
-                        ]
+                    for line in lines:
+                        line = line.strip()
                         
-                        for pattern in address_patterns:
-                            addr_match = re.search(pattern, info_text)
-                            if addr_match:
-                                address = addr_match.group(0)
-                                break
+                        # Détecter téléphone
+                        if re.search(r'(?:\+33|0)\s?[1-9](?:[\s\-\.]?\d{2}){4}', line):
+                            phone = line
+                            log_info(f"Téléphone trouvé: {phone}", debug)
+                        
+                        # Détecter adresse (contient code postal ou mots clés)
+                        elif (re.search(r'\d{5}', line) or 
+                              any(word in line.lower() for word in ['rue', 'avenue', 'boulevard', 'place'])):
+                            if not address or len(line) > len(address):
+                                address = line
+                                log_info(f"Adresse trouvée: {address}", debug)
                     
                     # Construction données brutes
                     raw_data = {
@@ -439,16 +467,25 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
                     if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
                         results.append(normalized)
                         extracted_count += 1
-                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name'][:50]}", debug)
+                        log_info(f"✅ Extrait {extracted_count}/{limit}: {normalized['name'][:50]}", debug)
+                    else:
+                        log_info(f"❌ Données insuffisantes pour {name}", debug)
                     
                 except Exception as e:
                     log_error(f"Erreur extraction business {idx}: {e}")
+                    if debug:
+                        import traceback
+                        log_error(traceback.format_exc())
                     continue
             
-            log_info(f"Extraction terminée: {len(results)} résultats (offset: {offset})", debug)
+            log_info(f"\n=== EXTRACTION TERMINÉE ===", debug)
+            log_info(f"Résultats: {len(results)} extraits (sur {len(businesses)} trouvés, offset: {offset})", debug)
             
         except Exception as e:
-            log_error(f"Erreur scraping Maps: {e}")
+            log_error(f"Erreur fatale scraping Maps: {e}")
+            if debug:
+                import traceback
+                log_error(traceback.format_exc())
         finally:
             try:
                 browser.close()
@@ -459,7 +496,7 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
 
 def main():
     """Point d'entrée principal"""
-    parser = argparse.ArgumentParser(description='Google Maps Scraper v2.0 avec offset')
+    parser = argparse.ArgumentParser(description='Google Maps Scraper v3.0 avec extraction multiple')
     parser.add_argument('query', help='Activité à rechercher (ex: "plombier")')
     parser.add_argument('--city', default='', help='Ville de recherche (ex: "Nantes")')
     parser.add_argument('--limit', type=int, default=50, help='Limite de résultats (défaut: 50)')
@@ -489,18 +526,21 @@ def main():
         
         # Logs de résumé
         if args.debug:
-            log_info(f"Scraping terminé en {duration:.2f}s: {len(results)} résultats", True)
+            log_info(f"\n=== RÉSUMÉ FINAL ===", True)
+            log_info(f"Durée totale: {duration:.2f}s", True)
+            log_info(f"Résultats obtenus: {len(results)}", True)
             
-            # Stats par type de téléphone
-            mobile_count = sum(1 for r in results if r.get('mobile_detected'))
-            log_info(f"Téléphones mobiles: {mobile_count}/{len(results)}", True)
-            
-            # Stats par ville
-            cities = {}
-            for r in results:
-                city = r.get('city', 'Inconnu')
-                cities[city] = cities.get(city, 0) + 1
-            log_info(f"Répartition villes: {dict(list(cities.items())[:5])}", True)
+            if results:
+                # Stats par type de téléphone
+                mobile_count = sum(1 for r in results if r.get('mobile_detected'))
+                log_info(f"Téléphones mobiles: {mobile_count}/{len(results)}", True)
+                
+                # Stats par ville
+                cities = {}
+                for r in results:
+                    city = r.get('city', 'Inconnu')
+                    cities[city] = cities.get(city, 0) + 1
+                log_info(f"Répartition villes: {dict(list(cities.items())[:5])}", True)
         
         # Output JSON Lines pour n8n
         for result in results:
@@ -511,6 +551,9 @@ def main():
         sys.exit(0)
     except Exception as e:
         log_error(f"Erreur fatale: {e}")
+        if args.debug:
+            import traceback
+            log_error(traceback.format_exc())
         sys.exit(1)
 
 if __name__ == "__main__":
