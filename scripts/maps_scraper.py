@@ -20,10 +20,11 @@ except ImportError:
     print("ERREUR: Playwright non installé. Run: pip install playwright", file=sys.stderr)
     sys.exit(1)
 
-# Configuration proxy depuis variables d'environnement
-PROXY_SERVER = os.getenv("PROXY_SERVER", "http://p.webshare.io:80")
-PROXY_USER = os.getenv("PROXY_USER", "")
-PROXY_PASS = os.getenv("PROXY_PASS", "")
+# Configuration proxy Webshare
+PROXY_HOST = os.getenv("p.webshare.io")
+PROXY_PORT = os.getenv("80")
+PROXY_USER = os.getenv("xftpfnvt")
+PROXY_PASS = os.getenv("yulnmnbiq66j")
     
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
