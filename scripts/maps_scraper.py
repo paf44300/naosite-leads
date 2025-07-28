@@ -31,58 +31,96 @@ def log_info(message, debug=False):
 
 def extract_clean_phone_maps(business_text, debug=False):
     """
-    CORRECTION CRITIQUE : Extraction téléphone anti-contamination horaires
+    CORRECTION CRITIQUE v2 : Extraction téléphone même avec horaires sur même ligne
     """
     if not business_text or len(business_text) > 500:
         return None
     
-    # Séparer le texte en lignes pour analyse ligne par ligne
-    lines = business_text.split('\n')
+    # NOUVELLE APPROCHE : Chercher le téléphone dans TOUT le texte d'abord
+    # puis valider qu'il n'est pas un horaire
     
-    for line in lines:
-        line = line.strip()
-        
-        # SKIP explicite des lignes contenant des horaires
-        if re.search(r'\b(?:open|closed|ouvert|fermé|hours|horaires)\b', line.lower()):
-            if debug:
-                log_info(f"Ligne ignorée (horaires): {line[:50]}", True)
-            continue
+    # Patterns téléphone français (ordre de priorité)
+    phone_patterns = [
+        r'(\+33[1-9](?:\s?\d){8})',          # +33 6 67 51 51 97
+        r'(\+33(?:\s?\d){9})',               # +33 667515197  
+        r'(0[1-9](?:[\s\.-]?\d){8})',        # 06 67 51 51 97
+    ]
+    
+    found_phones = []
+    
+    for pattern in phone_patterns:
+        matches = re.findall(pattern, business_text)
+        for match in matches:
+            # Nettoyer le téléphone trouvé
+            clean_phone = re.sub(r'[^\d+]', '', match)
             
-        # SKIP lignes avec patterns d'heures : 21h, 22:00, etc.
-        if re.search(r'\b(?:2[0-4]|1[0-9])[h:]?\d{0,2}\b', line):
-            if debug:
-                log_info(f"Ligne ignorée (heures): {line[:50]}", True)
-            continue
-            
-        # SKIP lignes avec jours de la semaine
-        if re.search(r'\b(?:lun|mar|mer|jeu|ven|sam|dim|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b', line.lower()):
-            if debug:
-                log_info(f"Ligne ignorée (jours): {line[:50]}", True)
-            continue
-        
-        # Chercher téléphone sur ligne "propre"
-        phone_patterns = [
-            r'(\+33[1-9](?:\d[\s\.-]?){8})',  # +33 format
-            r'(0[1-9](?:\d[\s\.-]?){8})',     # 0X format français
-        ]
-        
-        for pattern in phone_patterns:
-            match = re.search(pattern, line)
-            if match:
-                raw_phone = match.group(1)
-                
-                # Validation supplémentaire : rejeter si ressemble à horaire
-                digits_only = re.sub(r'\D', '', raw_phone)
-                if len(digits_only) >= 9:
-                    # Vérifier que les 2-3 premiers chiffres ne sont pas des heures
-                    first_two = digits_only[:2]
-                    if first_two.startswith('0') or int(first_two) <= 24:
-                        # C'est probablement un téléphone valide
-                        if debug:
-                            log_info(f"Téléphone trouvé: {raw_phone} (ligne: {line[:50]})", True)
-                        return normalize_phone(raw_phone)
+            # Validation anti-horaires : un téléphone français valide
+            if is_valid_french_phone(clean_phone, debug):
+                found_phones.append(clean_phone)
+                if debug:
+                    log_info(f"✅ Téléphone valide trouvé: {match} → {clean_phone}", True)
+    
+    # Retourner le premier téléphone valide trouvé
+    if found_phones:
+        return normalize_phone(found_phones[0])
+    
+    if debug:
+        log_info(f"❌ Aucun téléphone trouvé dans: {business_text[:100]}...", True)
     
     return None
+
+def is_valid_french_phone(phone_digits, debug=False):
+    """
+    Validation stricte téléphone français (anti-horaires)
+    """
+    if not phone_digits:
+        return False
+    
+    # Supprimer le + si présent
+    digits = phone_digits.replace('+', '')
+    
+    # Patterns téléphones français valides
+    valid_patterns = [
+        r'336[67]\d{8}',     # Mobile +33 6/7
+        r'33[1-5]\d{8}',     # Fixe +33 1-5
+        r'0[67]\d{8}',       # Mobile 06/07
+        r'0[1-5]\d{8}',      # Fixe 01-05
+    ]
+    
+    for pattern in valid_patterns:
+        if re.match(pattern, digits):
+            # Validation supplémentaire : pas un horaire déguisé
+            if not looks_like_time(digits):
+                if debug:
+                    log_info(f"✅ Pattern valide: {digits} (pattern: {pattern})", True)
+                return True
+    
+    if debug:
+        log_info(f"❌ Pattern invalide: {digits}", True)
+    
+    return False
+
+def looks_like_time(digits):
+    """
+    Détecte si une séquence de chiffres ressemble à un horaire
+    """
+    if len(digits) < 8:
+        return False
+    
+    # Vérifier si ça commence par des patterns d'horaires
+    time_patterns = [
+        r'^21\d{8}',   # 21:00... 
+        r'^22\d{8}',   # 22:00...
+        r'^23\d{8}',   # 23:00...
+        r'^24\d{8}',   # 24:00...
+        r'^20\d{8}',   # 20:00...
+    ]
+    
+    for pattern in time_patterns:
+        if re.match(pattern, digits):
+            return True
+    
+    return False
 
 def normalize_phone(phone_raw):
     """Normalise téléphone au format E.164 français"""
