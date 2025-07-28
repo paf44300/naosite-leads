@@ -488,7 +488,8 @@ def scrape_pj(query, city="", limit=50, session_id=None, debug=False):
                             results.append(normalized)
                             phone_status = "📞" if normalized.get('phone') else ""
                             email_status = "📧" if normalized.get('email') else ""
-                            log_info(f"Extrait PJ {len(results)}/{limit}: {phone_status}{email_status} {normalized['name'][:40]...}", debug)
+                            name_short = normalized['name'][:40] + ('...' if len(normalized['name']) > 40 else '')
+                            log_info(f"Extrait PJ {len(results)}/{limit}: {phone_status}{email_status} {name_short}", debug)
                         
                     except Exception as e:
                         log_error(f"Erreur extraction business PJ page {page_count + 1}, item {idx}: {e}")
