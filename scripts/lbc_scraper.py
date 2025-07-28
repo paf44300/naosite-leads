@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-LeBonCoin Pro Scraper v1.5 - Annonces entreprises sans site
-Usage: python lbc_scraper.py "plombier" --city "Nantes" --limit 30
+LeBonCoin Pro Scraper v2.0 - CORRIGÉ avec extraction téléphone anti-horaires
+Usage: python lbc_scraper.py "plombier" --city "Nantes" --limit 30 --session-id "abc123"
 """
 
 import os
@@ -20,12 +20,6 @@ except ImportError:
     print("ERREUR: Playwright non installé. Run: pip install playwright", file=sys.stderr)
     sys.exit(1)
 
-# Configuration proxy Webshare
-PROXY_HOST = os.getenv("proxy.webshare.io")
-PROXY_PORT = os.getenv("80")
-PROXY_USER = os.getenv("xftpfnvt")
-PROXY_PASS = os.getenv("yulnmnbiq66j")
-
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
     print(f"[LBC_SCRAPER ERROR] {message}", file=sys.stderr)
@@ -34,6 +28,85 @@ def log_info(message, debug=False):
     """Log info vers stderr si debug activé"""
     if debug:
         print(f"[LBC_SCRAPER INFO] {message}", file=sys.stderr)
+
+def extract_clean_phone_lbc(phone_text, debug=False):
+    """
+    CORRECTION CRITIQUE : Extraction téléphone LBC anti-contamination horaires
+    LBC souvent mobiles : 06 12 34 56 78
+    """
+    if not phone_text:
+        return None
+    
+    # Nettoyer d'abord les patterns d'horaires courants
+    cleaned_text = phone_text.lower()
+    
+    # Supprimer les patterns d'horaires spécifiques LBC
+    business_hours_patterns = [
+        r'\b(?:open|closed|ouvert|fermé|disponible|dispo)\b',
+        r'\b(?:lun|mar|mer|jeu|ven|sam|dim)\w*',
+        r'\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+        r'\b(?:2[0-4]|1[0-9])[h:]?\d{0,2}\b',  # 20h, 21:00, etc.
+        r'\b(?:matin|après-midi|soir|journée|soirée)\b',
+        r'\b(?:de|à|from|to|until|jusqu)\b',   # Connecteurs temporels
+    ]
+    
+    for pattern in business_hours_patterns:
+        cleaned_text = re.sub(pattern, ' ', cleaned_text, flags=re.IGNORECASE)
+    
+    # LBC patterns téléphone (souvent mobiles)
+    lbc_phone_patterns = [
+        r'(\+33[67]\d{8})',                    # Mobile +33 6/7
+        r'(0[67](?:[\s\.-]?\d){8})',           # Mobile 06/07
+        r'(\+33[1-5]\d{8})',                   # Fixe +33
+        r'(0[1-5](?:[\s\.-]?\d){8})',          # Fixe 01-05
+        r'(\d{2}[\s\.-]?\d{2}[\s\.-]?\d{2}[\s\.-]?\d{2}[\s\.-]?\d{2})', # Format espacé
+    ]
+    
+    for pattern in lbc_phone_patterns:
+        match = re.search(pattern, cleaned_text)
+        if match:
+            raw_phone = match.group(1)
+            
+            # Validation : garder que les chiffres pour validation
+            digits_only = re.sub(r'\D', '', raw_phone)
+            
+            if len(digits_only) >= 9 and len(digits_only) <= 11:
+                # Vérifier que ce n'est pas un pattern d'horaire déguisé
+                # Pour LBC, priorité aux mobiles (06/07)
+                if digits_only.startswith('06') or digits_only.startswith('07') or \
+                   digits_only.startswith('3366') or digits_only.startswith('3367'):
+                    if debug:
+                        log_info(f"Mobile LBC trouvé: {raw_phone} → {digits_only}", True)
+                    return normalize_phone_lbc(digits_only)
+                elif digits_only.startswith('0') and digits_only[1] in '12345':
+                    if debug:
+                        log_info(f"Fixe LBC trouvé: {raw_phone} → {digits_only}", True)
+                    return normalize_phone_lbc(digits_only)
+    
+    return None
+
+def normalize_phone_lbc(phone_digits):
+    """Normalise téléphone LBC au format E.164"""
+    if not phone_digits or len(phone_digits) < 9:
+        return None
+    
+    # Normalisation française (LBC souvent mobiles)
+    if phone_digits.startswith('33'):
+        phone = '+' + phone_digits
+    elif phone_digits.startswith('0'):
+        phone = '+33' + phone_digits[1:]
+    elif len(phone_digits) == 9:
+        phone = '+33' + phone_digits
+    elif len(phone_digits) == 10 and phone_digits.startswith('0'):
+        phone = '+33' + phone_digits[1:]
+    else:
+        phone = '+33' + phone_digits
+    
+    # Validation longueur finale
+    if len(phone) < 12 or len(phone) > 15:
+        return None
+        
+    return phone
 
 def normalize_activity(activity):
     """Standardise les activités (fonction identique autres scrapers)"""
@@ -77,33 +150,6 @@ def normalize_activity(activity):
     
     return activity.title()
 
-def normalize_phone(phone_raw):
-    """Normalise téléphone (LBC souvent mobiles)"""
-    if not phone_raw:
-        return None
-    
-    # LBC affiche souvent les téléphones avec espaces
-    phone = re.sub(r'[^\d]', '', str(phone_raw))
-    
-    if not phone:
-        return None
-    
-    # Normalisation française
-    if phone.startswith('33'):
-        phone = '+' + phone
-    elif phone.startswith('0'):
-        phone = '+33' + phone[1:]
-    elif len(phone) == 9:
-        phone = '+33' + phone
-    elif len(phone) == 10 and phone.startswith('0'):
-        phone = '+33' + phone[1:]
-    
-    # Validation
-    if len(phone) < 10 or len(phone) > 15:
-        return None
-        
-    return phone
-
 def extract_city_lbc(address):
     """Extraction ville format LeBonCoin"""
     if not address:
@@ -138,11 +184,11 @@ def extract_city_lbc(address):
     # Fallback
     return address.split(',')[0].strip() if ',' in address else address.strip()
 
-def normalize_data(raw_data, query, debug=False):
+def normalize_data(raw_data, query, session_id=None, debug=False):
     """Normalise données LBC selon schéma unifié Naosite"""
     
-    # Téléphone (LBC souvent mobiles)
-    phone = normalize_phone(raw_data.get('phone', ''))
+    # Téléphone LBC CORRIGÉ
+    phone = extract_clean_phone_lbc(raw_data.get('phone_text', '') or raw_data.get('description', ''), debug)
     
     # Email rare sur LBC (masqué)
     email = None  # LBC masque généralement les emails
@@ -157,7 +203,7 @@ def normalize_data(raw_data, query, debug=False):
         name = name[:150] + '...'
     
     # Activité (dérivée du titre de l'annonce)
-    activity = raw_data.get('activity') or query or ''
+    activity = raw_data.get('activity') or raw_data.get('title') or query or ''
     normalized_activity = normalize_activity(activity)
     
     # Champs calculés
@@ -184,6 +230,10 @@ def normalize_data(raw_data, query, debug=False):
         "mobile_detected": mobile_detected,
         "city_code": city_code,
         
+        # Métadonnées session
+        "_session_id": session_id,
+        "_scraper_source": "lbc",
+        
         # Debug
         "raw_data": raw_data if debug else None
     }
@@ -194,11 +244,12 @@ def normalize_data(raw_data, query, debug=False):
     
     return result
 
-def scrape_lbc(query, city="", limit=30, debug=False):
-    """Scraper LeBonCoin Pro annonces services"""
+def scrape_lbc(query, city="", limit=30, session_id=None, debug=False):
+    """Scraper LeBonCoin Pro annonces services CORRIGÉ"""
     results = []
     
-    log_info(f"Démarrage scraping LBC: query='{query}', city='{city}', limit={limit}", debug)
+    log_info(f"Démarrage scraping LBC v2.0: query='{query}', city='{city}', limit={limit}", debug)
+    log_info(f"Session: {session_id}", debug)
     
     with sync_playwright() as p:
         # Configuration navigateur
@@ -209,19 +260,17 @@ def scrape_lbc(query, city="", limit=30, debug=False):
             '--disable-extensions'
         ]
         
-        browser_kwargs = {'headless': True, 'args': browser_args}
-        
-        # Proxy si disponible
+        # Proxy Webshare en dur
         browser = p.chromium.launch(
             headless=True,
             args=browser_args,
             proxy={
-                "server":   "http://p.webshare.io:80",
+                "server": "http://p.webshare.io:80",
                 "username": "xftpfnvt-1",
                 "password": "yulnmnbiq66j"
             }
         )
-        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
+        log_info("Proxy Webshare configuré: xftpfnvt-1@p.webshare.io:80", debug)
         
         context = browser.new_context(
             viewport={'width': 1366, 'height': 768},
@@ -246,7 +295,8 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                     'button[id*="accept"]',
                     'button[id*="consent"]', 
                     'button[data-testid="accept"]',
-                    '#didomi-notice-agree-button'
+                    '#didomi-notice-agree-button',
+                    '[data-testid="accept-all"]'
                 ]
                 
                 for cookie_sel in cookie_selectors:
@@ -264,7 +314,7 @@ def scrape_lbc(query, city="", limit=30, debug=False):
             
             # Scroll progressif pour charger annonces (LBC lazy loading)
             scroll_count = 0
-            max_scrolls = min(8, (limit // 10) + 2)
+            max_scrolls = min(8, (limit // 8) + 2)
             
             for scroll in range(max_scrolls):
                 try:
@@ -283,7 +333,8 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                 '[data-qa-id="aditem_container"]',
                 '.styles_AdCard__container',
                 '[data-testid="ad-item"]',
-                '.ad-item'
+                '.ad-item',
+                '[data-testid="adCard"]'
             ]
             
             ads = []
@@ -291,7 +342,7 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                 try:
                     ads = page.query_selector_all(selector)
                     if ads:
-                        log_info(f"Trouvé {len(ads)} annonces avec sélecteur {selector}", debug)
+                        log_info(f"Trouvé {len(ads)} annonces LBC avec sélecteur {selector}", debug)
                         break
                 except:
                     continue
@@ -312,7 +363,8 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                         '[data-qa-id="aditem_title"]',
                         '.styles_AdCardTitle__title',
                         '[data-testid="ad-title"]',
-                        'h3'
+                        'h3',
+                        '[data-testid="adTitle"]'
                     ]
                     
                     title = ""
@@ -340,7 +392,8 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                         '.styles_AdCardSellerName__name',
                         '[data-qa-id="aditem_seller"]',
                         '.seller-name',
-                        '.advertiser-name'
+                        '.advertiser-name',
+                        '[data-testid="sellerName"]'
                     ]
                     
                     seller = ""
@@ -359,7 +412,8 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                         '[data-qa-id="aditem_location"]',
                         '.styles_AdCardLocation__location',
                         '.ad-location',
-                        '.location'
+                        '.location',
+                        '[data-testid="adLocation"]'
                     ]
                     
                     location = ""
@@ -377,7 +431,8 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                     price_selectors = [
                         '[data-qa-id="aditem_price"]',
                         '.styles_AdCardPrice__price',
-                        '.price'
+                        '.price',
+                        '[data-testid="adPrice"]'
                     ]
                     
                     price = ""
@@ -391,33 +446,39 @@ def scrape_lbc(query, city="", limit=30, debug=False):
                             continue
                     
                     # Validation : c'est bien un service professionnel
-                    service_indicators = ['€', 'prix', 'tarif', 'devis', 'intervention']
+                    service_indicators = ['€', 'prix', 'tarif', 'devis', 'intervention', 'service']
                     is_service = any(indicator in (title + ' ' + price).lower() for indicator in service_indicators)
                     
                     if not is_service:
                         continue
                     
-                    # Construction données (pas de téléphone disponible sans cliquer)
+                    # Récupérer description/texte complet pour extraction téléphone
+                    ad_text = ad.inner_text()
+                    
+                    # Construction données (téléphone extrait du texte complet)
                     raw_data = {
                         'name': seller or f"Annonceur {title[:30]}",
                         'activity': title,
-                        'phone': "",  # Nécessiterait clic sur annonce
+                        'title': title,
+                        'phone_text': ad_text,  # CRITIQUE pour extraction téléphone
+                        'description': ad_text,
                         'address': location,
                         'price': price,
                         'index': idx
                     }
                     
-                    # Normalisation
-                    normalized = normalize_data(raw_data, query, debug)
+                    # Normalisation CORRIGÉE
+                    normalized = normalize_data(raw_data, query, session_id, debug)
                     
                     # Validation minimale : nom et adresse
                     if normalized['name'] and normalized['address']:
                         results.append(normalized)
                         extracted_count += 1
-                        log_info(f"Extrait LBC {extracted_count}/{limit}: {normalized['name'][:50]}", debug)
+                        phone_status = "📞" if normalized.get('phone') else "📍"
+                        log_info(f"Extrait LBC {extracted_count}/{limit}: {phone_status} {normalized['name'][:40]}", debug)
                     
                 except Exception as e:
-                    log_error(f"Erreur extraction annonce {idx}: {e}")
+                    log_error(f"Erreur extraction annonce LBC {idx}: {e}")
                     continue
             
             log_info(f"Extraction LBC terminée: {len(results)} annonces", debug)
@@ -434,10 +495,11 @@ def scrape_lbc(query, city="", limit=30, debug=False):
 
 def main():
     """Point d'entrée principal"""
-    parser = argparse.ArgumentParser(description='LeBonCoin Pro Scraper v1.5 - Services sans site')
+    parser = argparse.ArgumentParser(description='LeBonCoin Pro Scraper v2.0 avec extraction téléphone corrigée')
     parser.add_argument('query', help='Service à rechercher (ex: "plombier")')
     parser.add_argument('--city', default='', help='Ville de recherche (ex: "Nantes")')
     parser.add_argument('--limit', type=int, default=30, help='Limite de résultats (défaut: 30)')
+    parser.add_argument('--session-id', default=None, help='ID de session pour tracking')
     parser.add_argument('--debug', action='store_true', help='Mode debug avec logs détaillés')
     
     args = parser.parse_args()
@@ -454,12 +516,18 @@ def main():
     # Scraping
     try:
         start_time = time.time()
-        results = scrape_lbc(args.query, args.city, args.limit, args.debug)
+        results = scrape_lbc(args.query, args.city, args.limit, 
+                            getattr(args, 'session_id'), args.debug)
         duration = time.time() - start_time
         
         # Stats si debug
         if args.debug:
             log_info(f"Scraping LBC terminé en {duration:.2f}s: {len(results)} annonces", True)
+            
+            # Stats téléphones (spécificité LBC : souvent mobiles)
+            phone_count = sum(1 for r in results if r.get('phone'))
+            mobile_count = sum(1 for r in results if r.get('mobile_detected'))
+            log_info(f"Téléphones: {phone_count} total, {mobile_count} mobiles", True)
             
             # Stats activités détectées
             activities = {}
@@ -467,15 +535,8 @@ def main():
                 activity = r.get('activity', 'Inconnu')
                 activities[activity] = activities.get(activity, 0) + 1
             
-            top_activities = sorted(activities.items(), key=lambda x: x[1], reverse=True)[:5]
+            top_activities = sorted(activities.items(), key=lambda x: x[1], reverse=True)[:3]
             log_info(f"Top activités: {dict(top_activities)}", True)
-            
-            # Stats localisation
-            cities = {}
-            for r in results:
-                city = r.get('city', 'Inconnu')
-                cities[city] = cities.get(city, 0) + 1
-            log_info(f"Répartition villes: {dict(list(cities.items())[:3])}", True)
         
         # Output JSON Lines pour n8n
         for result in results:
