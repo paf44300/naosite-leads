@@ -21,10 +21,10 @@ except ImportError:
     sys.exit(1)
 
 # Configuration proxy Webshare
-PROXY_HOST = os.getenv("p.webshare.io")
-PROXY_PORT = os.getenv("80")
-PROXY_USER = os.getenv("xftpfnvt")
-PROXY_PASS = os.getenv("yulnmnbiq66j")
+PROXY_HOST = "p.webshare.io"
+PROXY_PORT = "80"
+PROXY_USER = "xftpfnvt"
+PROXY_PASS = "yulnmnbiq66j"
     
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
