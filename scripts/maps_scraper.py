@@ -234,7 +234,7 @@ def scrape_maps(query, city="", limit=50, offset=0, debug=False):
             log_info(f"URL Maps: {maps_url}", debug)
             
             # Navigation avec timeout
-            page.goto(maps_url, wait_until='networkidle', timeout=30000)
+            page.goto(maps_url, wait_until='domcontentloaded', timeout=30000)
             
             # Attente chargement initial
             time.sleep(random.uniform(3, 5))
