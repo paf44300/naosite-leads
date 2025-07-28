@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Google Maps Scraper v1.5 - Harmonisation des données
-Usage: python maps_scraper.py "plombier" --city "Nantes" --limit 50
+Google Maps Scraper v2.0 - Corrigé avec offset et meilleure extraction
+Usage: python maps_scraper.py "plombier" --city "Nantes" --limit 5 --offset 10
 """
 
 import os
@@ -20,11 +20,10 @@ except ImportError:
     print("ERREUR: Playwright non installé. Run: pip install playwright", file=sys.stderr)
     sys.exit(1)
 
-# Configuration proxy Webshare
-PROXY_HOST = os.getenv("p.webshare.io")
-PROXY_PORT = os.getenv("80")
-PROXY_USER = os.getenv("xftpfnvt")
-PROXY_PASS = os.getenv("yulnmnbiq66j")
+# Configuration proxy depuis variables d'environnement
+PROXY_SERVER = os.getenv("PROXY_SERVER", "http://p.webshare.io:80")
+PROXY_USER = os.getenv("PROXY_USER", "")
+PROXY_PASS = os.getenv("PROXY_PASS", "")
     
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
@@ -42,35 +41,28 @@ def normalize_activity(activity):
     
     activity = activity.lower().strip()
     
-    # Plombiers
-    if any(word in activity for word in ['plomb', 'sanitaire', 'chauffage eau']):
-        return 'Plombier'
+    # Mapping des activités
+    activity_map = {
+        'plomb': 'Plombier',
+        'sanitaire': 'Plombier',
+        'électr': 'Électricien',
+        'electric': 'Électricien',
+        'chauff': 'Chauffagiste',
+        'climat': 'Chauffagiste',
+        'maçon': 'Maçon',
+        'macon': 'Maçon',
+        'couvreur': 'Couvreur',
+        'toiture': 'Couvreur',
+        'menuisier': 'Menuisier',
+        'peintre': 'Peintre',
+        'carreleur': 'Carreleur',
+        'serrurier': 'Serrurier'
+    }
     
-    # Électriciens  
-    if any(word in activity for word in ['électr', 'electric', 'éclairage', 'installation électrique']):
-        return 'Électricien'
-        
-    # Chauffagistes
-    if any(word in activity for word in ['chauff', 'climat', 'pompe à chaleur', 'chaudière']):
-        return 'Chauffagiste'
-        
-    # Maçons
-    if any(word in activity for word in ['maçon', 'macon', 'bâti', 'construction', 'gros œuvre']):
-        return 'Maçon'
-        
-    # Autres métiers du bâtiment
-    if any(word in activity for word in ['couvreur', 'toiture', 'étanchéité']):
-        return 'Couvreur'
-    if any(word in activity for word in ['menuisier', 'menuiserie', 'bois', 'fenêtre']):
-        return 'Menuisier'
-    if any(word in activity for word in ['peintre', 'peinture', 'décoration']):
-        return 'Peintre'
-    if any(word in activity for word in ['carreleur', 'carrelage', 'faïence']):
-        return 'Carreleur'
-    if any(word in activity for word in ['serrurier', 'serrurerie', 'métallerie']):
-        return 'Serrurier'
+    for key, value in activity_map.items():
+        if key in activity:
+            return value
     
-    # Capitaliser première lettre si pas de correspondance
     return activity.title()
 
 def normalize_phone(phone_raw):
@@ -91,8 +83,6 @@ def normalize_phone(phone_raw):
         phone = '+33' + phone[1:]
     elif len(phone) == 9:
         phone = '+33' + phone
-    elif len(phone) == 10 and phone.startswith('0'):
-        phone = '+33' + phone[1:]
     
     # Validation longueur finale
     if len(phone) < 10 or len(phone) > 15:
@@ -124,14 +114,14 @@ def extract_city_from_address(address):
             else:
                 return match.group(1).strip()
     
-    # Fallback : prendre le premier mot capitalisé
-    words = address.split(',')
-    for word in words:
-        word = word.strip()
-        if word and word[0].isupper() and not word.isdigit():
-            return word
+    # Fallback : dernier élément avant France
+    parts = address.split(',')
+    for i in range(len(parts) - 1, -1, -1):
+        part = parts[i].strip()
+        if part and part != 'France' and not part.isdigit():
+            return part
     
-    return address.split(',')[0].strip() if ',' in address else address.strip()
+    return address.split(',')[0].strip()
 
 def normalize_data(raw_data, query, debug=False):
     """Normalise les données selon le schéma unifié Naosite"""
@@ -145,10 +135,10 @@ def normalize_data(raw_data, query, debug=False):
     
     # Nom entreprise nettoyé
     name = (raw_data.get('name', '') or '').strip()
-    if len(name) > 150:  # Limite raisonnable
+    if len(name) > 150:
         name = name[:150] + '...'
     
-    # Activité standardisée (utilise query si pas d'activité spécifique)
+    # Activité standardisée
     activity = raw_data.get('activity') or query or ''
     normalized_activity = normalize_activity(activity)
     
@@ -186,14 +176,18 @@ def normalize_data(raw_data, query, debug=False):
     
     return result
 
-def scrape_maps(query, city="", limit=50, debug=False):
-    """Scraper Google Maps avec anti-détection et harmonisation"""
+def scrape_maps(query, city="", limit=50, offset=0, debug=False):
+    """
+    Scraper Google Maps avec anti-détection et offset
+    
+    Args:
+        offset: Nombre de résultats à ignorer au début (pour éviter de prendre toujours les mêmes)
+    """
     results = []
     
-    log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}", debug)
+    log_info(f"Démarrage scraping Maps: query='{query}', city='{city}', limit={limit}, offset={offset}", debug)
     
     with sync_playwright() as p:
-        # 1. Configuration des args Chrome
         browser_args = [
             '--no-sandbox',
             '--disable-dev-shm-usage',
@@ -203,22 +197,29 @@ def scrape_maps(query, city="", limit=50, debug=False):
             '--disable-default-apps'
         ]
 
-        # 2. Lancement du navigateur via le Backbone Connection Webshare EN CLAIR
-        browser = p.chromium.launch(
-            headless=True,
-            args=browser_args,
-            proxy={
-                "server":   "http://p.webshare.io:80",
-                "username": "xftpfnvt-1",
-                "password": "yulnmnbiq66j"
+        # Configuration du proxy
+        browser_kwargs = {
+            'headless': True,
+            'args': browser_args
+        }
+        
+        if PROXY_USER and PROXY_PASS:
+            browser_kwargs['proxy'] = {
+                "server": PROXY_SERVER,
+                "username": PROXY_USER,
+                "password": PROXY_PASS
             }
-        )
-        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
+            log_info(f"Proxy configuré: {PROXY_USER}@{PROXY_SERVER}", debug)
+        else:
+            log_info("Pas de proxy configuré", debug)
+
+        browser = p.chromium.launch(**browser_kwargs)
 
         # Context avec user agent réaliste
         context = browser.new_context(
             viewport={'width': 1366, 'height': 768},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='fr-FR'
         )
         
         page = context.new_page()
@@ -236,15 +237,28 @@ def scrape_maps(query, city="", limit=50, debug=False):
             # Attente chargement initial
             time.sleep(random.uniform(3, 5))
             
-            # Scroll pour charger plus de résultats
+            # Accepter cookies si présent
+            try:
+                accept_button = page.query_selector('button:has-text("Tout accepter")')
+                if accept_button:
+                    accept_button.click()
+                    time.sleep(1)
+                    log_info("Cookies acceptés", debug)
+            except:
+                pass
+            
+            # Scroll pour charger plus de résultats (incluant l'offset)
+            total_needed = limit + offset
             scroll_attempts = 0
-            max_scrolls = min(10, (limit // 10) + 2)  # Adaptive selon limite
+            max_scrolls = min(15, (total_needed // 5) + 3)
             
             for scroll in range(max_scrolls):
                 try:
                     # Scroll dans la liste des résultats
                     page.evaluate("""
-                        const sidebar = document.querySelector('[role="main"]');
+                        const sidebar = document.querySelector('[role="main"]') || 
+                                       document.querySelector('.m6QErb') ||
+                                       document.querySelector('[aria-label*="Résultats"]');
                         if (sidebar) {
                             sidebar.scrollTop += 1000;
                         } else {
@@ -252,7 +266,7 @@ def scrape_maps(query, city="", limit=50, debug=False):
                         }
                     """)
                     
-                    time.sleep(random.uniform(1.5, 3))
+                    time.sleep(random.uniform(1.5, 2.5))
                     scroll_attempts += 1
                     
                     log_info(f"Scroll {scroll + 1}/{max_scrolls} effectué", debug)
@@ -261,15 +275,18 @@ def scrape_maps(query, city="", limit=50, debug=False):
                     log_error(f"Erreur scroll {scroll}: {e}")
                     break
             
+            # Attendre un peu après le dernier scroll
+            time.sleep(2)
+            
             # Extraction des résultats
             log_info("Début extraction données", debug)
             
             # Sélecteurs Google Maps (multiples pour robustesse)
             business_selectors = [
-                '[data-result-index]',
-                '[role="article"]',
+                'div[role="article"]',
+                'div[jsaction*="mouseover"]:has(a[aria-label])',
                 '.Nv2PK',
-                '[jsaction*="mouseover"]'
+                '[data-result-index]'
             ]
             
             businesses = []
@@ -286,17 +303,26 @@ def scrape_maps(query, city="", limit=50, debug=False):
                 log_error("Aucun élément business trouvé sur la page")
                 return []
             
+            # Extraction avec gestion de l'offset
             extracted_count = 0
+            skipped_count = 0
             
             for idx, business in enumerate(businesses):
+                # Skip les premiers résultats selon l'offset
+                if skipped_count < offset:
+                    skipped_count += 1
+                    continue
+                
                 if extracted_count >= limit:
                     break
                 
                 try:
-                    # Extraction nom
+                    # Extraction nom - sélecteurs multiples
                     name_selectors = [
-                        'h3', '.fontHeadlineSmall', '.qBF1Pd', 
-                        '[role="button"] span', '.OSrXXb'
+                        '.fontHeadlineSmall span',
+                        '.qBF1Pd',
+                        'h3',
+                        '[role="button"] span:not([aria-hidden])'
                     ]
                     
                     name = ""
@@ -305,7 +331,7 @@ def scrape_maps(query, city="", limit=50, debug=False):
                             name_el = business.query_selector(name_sel)
                             if name_el:
                                 name = name_el.inner_text().strip()
-                                if name and len(name) > 2:
+                                if name and len(name) > 2 and not name.startswith('·'):
                                     break
                         except:
                             continue
@@ -315,9 +341,9 @@ def scrape_maps(query, city="", limit=50, debug=False):
                     
                     # Vérification absence site web (critère principal)
                     website_indicators = [
-                        '[aria-label*="Site Web"]',
-                        '[aria-label*="Website"]', 
-                        '[data-value="Website"]',
+                        'a[aria-label*="Site Web"]',
+                        'a[aria-label*="Website"]',
+                        'a[data-value*="Website"]',
                         'a[href^="http"]:not([href*="google"]):not([href*="maps"])'
                     ]
                     
@@ -334,49 +360,76 @@ def scrape_maps(query, city="", limit=50, debug=False):
                         log_info(f"Ignoré {name}: site web détecté", debug)
                         continue
                     
-                  # --- NOUVELLE LOGIQUE D'EXTRACTION ADRESSE ET TÉLÉPHONE ---
-                    
-                    # 1. On récupère tout le bloc d'infos textuelles du business
-                    # Ce sélecteur est plus générique et cible le conteneur d'infos
-                    info_block_el = business.query_selector('.fontBodyMedium')
-                    info_text = info_block_el.inner_text().strip() if info_block_el else ""
-
+                    # Extraction des informations - Méthode améliorée
+                    info_text = ""
                     phone = ""
                     address = ""
-
-                    # 2. On cherche un numéro de téléphone dans ce bloc
-                    phone_match = re.search(r'(\+?\d{1,2}[\s\.\-]?\d([\s\.\-]?\d{2}){4})', info_text)
-                    if phone_match:
-                        phone = phone_match.group(1)
-                        # On nettoie le bloc d'infos du téléphone pour isoler l'adresse
-                        info_text = info_text.replace(phone, '').strip()
-                         
-                   # 3. On nettoie ce qui reste pour obtenir l'adresse
-                # On se base sur le fait que l'adresse suit souvent le séparateur '·'
+                    
+                    # Méthode 1 : Chercher le conteneur d'infos
+                    info_selectors = [
+                        '.W4Efsd',
+                        '.fontBodyMedium',
+                        '[class*="section-info"]'
+                    ]
+                    
+                    for info_sel in info_selectors:
+                        try:
+                            info_elements = business.query_selector_all(info_sel)
+                            for info_el in info_elements:
+                                text = info_el.inner_text().strip()
+                                if text:
+                                    info_text += " " + text
+                        except:
+                            continue
+                    
+                    # Extraction téléphone depuis le texte complet
+                    phone_patterns = [
+                        r'(?:(?:\+33|0)\s?[1-9](?:\s?\d{2}){4})',
+                        r'(?:\d{2}[\s\.\-]?){5}'
+                    ]
+                    
+                    for pattern in phone_patterns:
+                        phone_match = re.search(pattern, info_text)
+                        if phone_match:
+                            phone = phone_match.group(0)
+                            break
+                    
+                    # Extraction adresse - chercher après le séparateur
                     if '·' in info_text:
-    # On prend la partie après le séparateur et on nettoie les espaces
-                        address_cleaned = info_text.split('·')[-1].strip()
-                    else:
-    # S'il n'y a pas de séparateur, on prend le texte tel quel et on nettoie les espaces
-                        address_cleaned = info_text.strip()
-                    # S'il reste quelque chose qui ressemble à une adresse, on la prend
-                    if len(address_cleaned) > 5:
-                         address = address_cleaned
-                    else: # Fallback sur les anciens sélecteurs si la nouvelle méthode échoue
-                        address_selectors = ['[data-value*="Address"]', '.W4Efsd:nth-of-type(2) .W4Efsd']
-                        for addr_sel in address_selectors:
-                            addr_el = business.query_selector(addr_sel)
-                            if addr_el:
-                                address = addr_el.inner_text().strip()
+                        parts = info_text.split('·')
+                        # L'adresse est généralement après le premier ou deuxième séparateur
+                        for i in range(1, len(parts)):
+                            part = parts[i].strip()
+                            # Vérifier si c'est une adresse (contient des chiffres ou des mots clés)
+                            if (re.search(r'\d{5}', part) or 
+                                any(word in part.lower() for word in ['rue', 'avenue', 'boulevard', 'place', 'nantes', 'saint', 'france'])):
+                                address = part
+                                # Nettoyer l'adresse du téléphone si présent
+                                if phone and phone in address:
+                                    address = address.replace(phone, '').strip()
+                                break
+                    
+                    # Si pas d'adresse trouvée, chercher spécifiquement
+                    if not address:
+                        address_patterns = [
+                            r'(\d+[\s\w\-\']+,?\s*\d{5}\s*[A-Za-zÀ-ÿ\s\-\']+)',
+                            r'(\d{5}\s*[A-Za-zÀ-ÿ\s\-\']+)'
+                        ]
+                        
+                        for pattern in address_patterns:
+                            addr_match = re.search(pattern, info_text)
+                            if addr_match:
+                                address = addr_match.group(0)
                                 break
                     
                     # Construction données brutes
                     raw_data = {
                         'name': name,
-                        'activity': query,  # Utilise la query comme activité de base
+                        'activity': query,
                         'phone': phone,
                         'address': address,
-                        'index': idx
+                        'index': idx,
+                        'offset': offset
                     }
                     
                     # Normalisation selon schéma unifié
@@ -386,13 +439,13 @@ def scrape_maps(query, city="", limit=50, debug=False):
                     if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
                         results.append(normalized)
                         extracted_count += 1
-                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name']}", debug)
+                        log_info(f"Extrait {extracted_count}/{limit}: {normalized['name'][:50]}", debug)
                     
                 except Exception as e:
                     log_error(f"Erreur extraction business {idx}: {e}")
                     continue
             
-            log_info(f"Extraction terminée: {len(results)} résultats valides", debug)
+            log_info(f"Extraction terminée: {len(results)} résultats (offset: {offset})", debug)
             
         except Exception as e:
             log_error(f"Erreur scraping Maps: {e}")
@@ -406,10 +459,11 @@ def scrape_maps(query, city="", limit=50, debug=False):
 
 def main():
     """Point d'entrée principal"""
-    parser = argparse.ArgumentParser(description='Google Maps Scraper v1.5 avec harmonisation')
+    parser = argparse.ArgumentParser(description='Google Maps Scraper v2.0 avec offset')
     parser.add_argument('query', help='Activité à rechercher (ex: "plombier")')
     parser.add_argument('--city', default='', help='Ville de recherche (ex: "Nantes")')
     parser.add_argument('--limit', type=int, default=50, help='Limite de résultats (défaut: 50)')
+    parser.add_argument('--offset', type=int, default=0, help='Nombre de résultats à ignorer (défaut: 0)')
     parser.add_argument('--debug', action='store_true', help='Mode debug avec logs détaillés')
     
     args = parser.parse_args()
@@ -419,14 +473,18 @@ def main():
         log_error("Query ne peut pas être vide")
         sys.exit(1)
     
-    if args.limit <= 0 or args.limit > 1000:
-        log_error("Limit doit être entre 1 et 1000")
+    if args.limit <= 0 or args.limit > 100:
+        log_error("Limit doit être entre 1 et 100")
+        sys.exit(1)
+    
+    if args.offset < 0 or args.offset > 100:
+        log_error("Offset doit être entre 0 et 100")
         sys.exit(1)
     
     # Lancement du scraping
     try:
         start_time = time.time()
-        results = scrape_maps(args.query, args.city, args.limit, args.debug)
+        results = scrape_maps(args.query, args.city, args.limit, args.offset, args.debug)
         duration = time.time() - start_time
         
         # Logs de résumé
