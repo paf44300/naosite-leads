@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-PagesJaunes Scraper v1.5 - Focus emails + harmonisation
-Usage: python pj_scraper.py "plombier" --city "Nantes" --limit 50
+PagesJaunes Scraper v2.0 - CORRIGÉ avec extraction téléphone anti-horaires
+Usage: python pj_scraper.py "plombier" --city "Nantes" --limit 50 --session-id "abc123"
 """
 
 import os
@@ -20,12 +20,6 @@ except ImportError:
     print("ERREUR: Playwright non installé. Run: pip install playwright", file=sys.stderr)
     sys.exit(1)
 
-# Configuration proxy Webshare
-PROXY_HOST = os.getenv("proxy.webshare.io")
-PROXY_PORT = os.getenv("80")
-PROXY_USER = os.getenv("xftpfnvt")
-PROXY_PASS = os.getenv("yulnmnbiq66j")
-
 def log_error(message):
     """Log erreur vers stderr pour n8n monitoring"""
     print(f"[PJ_SCRAPER ERROR] {message}", file=sys.stderr)
@@ -34,6 +28,77 @@ def log_info(message, debug=False):
     """Log info vers stderr si debug activé"""
     if debug:
         print(f"[PJ_SCRAPER INFO] {message}", file=sys.stderr)
+
+def extract_clean_phone_pj(phone_text, debug=False):
+    """
+    CORRECTION CRITIQUE : Extraction téléphone PJ anti-contamination horaires
+    PJ format typique : 02.40.12.34.56 → +33240123456
+    """
+    if not phone_text:
+        return None
+    
+    # Nettoyer d'abord les patterns d'horaires courants
+    cleaned_text = phone_text.lower()
+    
+    # Supprimer les patterns d'horaires
+    business_hours_patterns = [
+        r'\b(?:open|closed|ouvert|fermé|hours|horaires)\b',
+        r'\b(?:lun|mar|mer|jeu|ven|sam|dim)\w*',
+        r'\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+        r'\b(?:2[0-4]|1[0-9])[h:]?\d{0,2}\b',  # 20h, 21:00, etc.
+        r'\b(?:de|à|from|to|until|jusqu)\b',   # Connecteurs temporels
+    ]
+    
+    for pattern in business_hours_patterns:
+        cleaned_text = re.sub(pattern, ' ', cleaned_text, flags=re.IGNORECASE)
+    
+    # PJ utilise souvent des points : 02.40.12.34.56
+    # Patterns PJ spécifiques
+    pj_phone_patterns = [
+        r'(\+33[1-9](?:[\.\s\-]?\d){8})',      # +33 avec points/espaces
+        r'(0[1-9](?:[\.\s\-]?\d){8})',         # 0X avec points/espaces
+        r'(\d{2}\.?\d{2}\.?\d{2}\.?\d{2}\.?\d{2})', # Format PJ avec points
+    ]
+    
+    for pattern in pj_phone_patterns:
+        match = re.search(pattern, cleaned_text)
+        if match:
+            raw_phone = match.group(1)
+            
+            # Validation : garder que les chiffres pour validation
+            digits_only = re.sub(r'\D', '', raw_phone)
+            
+            if len(digits_only) >= 9 and len(digits_only) <= 11:
+                # Vérifier que ce n'est pas un pattern d'horaire déguisé
+                if not re.match(r'^[0-2]\d{8,10}$', digits_only) or digits_only.startswith('0'):
+                    if debug:
+                        log_info(f"Téléphone PJ trouvé: {raw_phone} → {digits_only}", True)
+                    return normalize_phone_pj(digits_only)
+    
+    return None
+
+def normalize_phone_pj(phone_digits):
+    """Normalise téléphone PJ au format E.164"""
+    if not phone_digits or len(phone_digits) < 9:
+        return None
+    
+    # Normalisation française
+    if phone_digits.startswith('33'):
+        phone = '+' + phone_digits
+    elif phone_digits.startswith('0'):
+        phone = '+33' + phone_digits[1:]
+    elif len(phone_digits) == 9:
+        phone = '+33' + phone_digits
+    elif len(phone_digits) == 10 and phone_digits.startswith('0'):
+        phone = '+33' + phone_digits[1:]
+    else:
+        phone = '+33' + phone_digits
+    
+    # Validation longueur finale
+    if len(phone) < 12 or len(phone) > 15:
+        return None
+        
+    return phone
 
 def normalize_activity(activity):
     """Standardise les activités (fonction identique maps_scraper)"""
@@ -71,33 +136,6 @@ def normalize_activity(activity):
         return 'Serrurier'
     
     return activity.title()
-
-def normalize_phone(phone_raw):
-    """Normalise téléphone PJ (format: 02.40.12.34.56 → +33240123456)"""
-    if not phone_raw:
-        return None
-    
-    # PJ utilise souvent des points : 02.40.12.34.56
-    phone = re.sub(r'[^\d]', '', str(phone_raw))
-    
-    if not phone:
-        return None
-    
-    # Normalisation française
-    if phone.startswith('33'):
-        phone = '+' + phone
-    elif phone.startswith('0'):
-        phone = '+33' + phone[1:]
-    elif len(phone) == 9:
-        phone = '+33' + phone
-    elif len(phone) == 10 and phone.startswith('0'):
-        phone = '+33' + phone[1:]
-    
-    # Validation
-    if len(phone) < 10 or len(phone) > 15:
-        return None
-        
-    return phone
 
 def validate_email(email_raw):
     """Valide et nettoie un email"""
@@ -149,11 +187,11 @@ def extract_city_pj(address):
     
     return address.split(',')[0].strip() if ',' in address else address.strip()
 
-def normalize_data(raw_data, query, debug=False):
+def normalize_data(raw_data, query, session_id=None, debug=False):
     """Normalise données PJ selon schéma unifié Naosite"""
     
-    # Téléphone PJ
-    phone = normalize_phone(raw_data.get('phone', ''))
+    # Téléphone PJ CORRIGÉ
+    phone = extract_clean_phone_pj(raw_data.get('phone', ''), debug)
     
     # Email PJ (spécificité importante)
     email = validate_email(raw_data.get('email', ''))
@@ -195,6 +233,10 @@ def normalize_data(raw_data, query, debug=False):
         "mobile_detected": mobile_detected,
         "city_code": city_code,
         
+        # Métadonnées session
+        "_session_id": session_id,
+        "_scraper_source": "pj",
+        
         # Debug
         "raw_data": raw_data if debug else None
     }
@@ -205,11 +247,12 @@ def normalize_data(raw_data, query, debug=False):
     
     return result
 
-def scrape_pj(query, city="", limit=50, debug=False):
-    """Scraper PagesJaunes avec focus emails"""
+def scrape_pj(query, city="", limit=50, session_id=None, debug=False):
+    """Scraper PagesJaunes avec focus emails CORRIGÉ"""
     results = []
     
-    log_info(f"Démarrage scraping PJ: query='{query}', city='{city}', limit={limit}", debug)
+    log_info(f"Démarrage scraping PJ v2.0: query='{query}', city='{city}', limit={limit}", debug)
+    log_info(f"Session: {session_id}", debug)
     
     with sync_playwright() as p:
         # Configuration navigateur (identique maps_scraper)
@@ -220,19 +263,17 @@ def scrape_pj(query, city="", limit=50, debug=False):
             '--disable-extensions'
         ]
         
-        browser_kwargs = {'headless': True, 'args': browser_args}
-        
-        # Proxy si disponible
+        # Proxy Webshare en dur
         browser = p.chromium.launch(
             headless=True,
             args=browser_args,
             proxy={
-                "server":   "http://p.webshare.io:80",
+                "server": "http://p.webshare.io:80",
                 "username": "xftpfnvt-1",
                 "password": "yulnmnbiq66j"
             }
         )
-        log_info("Backbone proxy configuré: xftpfnvt-1@p.webshare.io:80", debug)
+        log_info("Proxy Webshare configuré: xftpfnvt-1@p.webshare.io:80", debug)
         
         context = browser.new_context(
             viewport={'width': 1366, 'height': 768},
@@ -253,20 +294,32 @@ def scrape_pj(query, city="", limit=50, debug=False):
             
             # Gestion des cookies/RGPD si présent
             try:
-                cookie_accept = page.query_selector('button[id*="accept"], button[id*="consent"], .didomi-continue-without-agreeing')
-                if cookie_accept:
-                    cookie_accept.click()
-                    time.sleep(1)
-                    log_info("Cookies acceptés", debug)
+                cookie_selectors = [
+                    'button[id*="accept"]',
+                    'button[id*="consent"]', 
+                    '.didomi-continue-without-agreeing',
+                    '#didomi-notice-agree-button'
+                ]
+                
+                for cookie_sel in cookie_selectors:
+                    try:
+                        cookie_btn = page.query_selector(cookie_sel)
+                        if cookie_btn:
+                            cookie_btn.click()
+                            time.sleep(1)
+                            log_info("Cookies PJ acceptés", debug)
+                            break
+                    except:
+                        continue
             except:
                 pass
             
             # Navigation pages (PJ pagine souvent)
             page_count = 0
-            max_pages = min(3, (limit // 20) + 1)  # ~20 résultats par page PJ
+            max_pages = min(3, (limit // 15) + 1)  # ~15 résultats par page PJ
             
             while page_count < max_pages and len(results) < limit:
-                log_info(f"Traitement page {page_count + 1}/{max_pages}", debug)
+                log_info(f"Traitement page PJ {page_count + 1}/{max_pages}", debug)
                 
                 # Attente chargement page
                 time.sleep(random.uniform(2, 4))
@@ -276,7 +329,8 @@ def scrape_pj(query, city="", limit=50, debug=False):
                     '.bi-bloc',
                     '.item-entreprise',
                     '[data-pj-localise]',
-                    '.bi'
+                    '.bi',
+                    '.search-item'
                 ]
                 
                 businesses = []
@@ -284,13 +338,13 @@ def scrape_pj(query, city="", limit=50, debug=False):
                     try:
                         businesses = page.query_selector_all(selector)
                         if businesses:
-                            log_info(f"Trouvé {len(businesses)} entreprises avec sélecteur {selector}", debug)
+                            log_info(f"Trouvé {len(businesses)} entreprises PJ avec sélecteur {selector}", debug)
                             break
                     except:
                         continue
                 
                 if not businesses:
-                    log_info("Aucune entreprise trouvée sur cette page", debug)
+                    log_info("Aucune entreprise trouvée sur cette page PJ", debug)
                     break
                 
                 # Extraction données de la page courante
@@ -304,7 +358,8 @@ def scrape_pj(query, city="", limit=50, debug=False):
                             'a[href^="http"]:not([href*="pagesjaunes"]):not([href*="mappy"])',
                             '.bi-website a',
                             '[data-bi="website"]',
-                            '.teaser-website'
+                            '.teaser-website',
+                            'a[title*="site"]'
                         ]
                         
                         has_website = False
@@ -316,6 +371,8 @@ def scrape_pj(query, city="", limit=50, debug=False):
                                     # Ignorer les liens internes PJ
                                     if href and not any(internal in href for internal in ['pagesjaunes', 'mappy', 'javascript:']):
                                         has_website = True
+                                        if debug:
+                                            log_info(f"Site web détecté: {href}", True)
                                         break
                             except:
                                 continue
@@ -329,7 +386,8 @@ def scrape_pj(query, city="", limit=50, debug=False):
                             '.raison-sociale',
                             '.bi-nom',
                             'h3 a',
-                            '.denomination'
+                            '.denomination',
+                            '.bi-titre a'
                         ]
                         
                         name = ""
@@ -351,7 +409,8 @@ def scrape_pj(query, city="", limit=50, debug=False):
                             'a[href^="mailto:"]',
                             '.bi-email a',
                             '[data-bi="email"]',
-                            '.contact-email'
+                            '.contact-email',
+                            '.email-link'
                         ]
                         
                         email = ""
@@ -370,21 +429,22 @@ def scrape_pj(query, city="", limit=50, debug=False):
                             except:
                                 continue
                         
-                        # Extraction téléphone
+                        # Extraction téléphone - RÉCUPÉRER LE TEXTE COMPLET
                         phone_selectors = [
                             '.bi-tel .number',
                             '.numero-telephone',
                             '[data-bi="tel"]',
-                            '.phone-number'
+                            '.phone-number',
+                            '.bi-tel'
                         ]
                         
-                        phone = ""
+                        phone_text = ""
                         for phone_sel in phone_selectors:
                             try:
                                 phone_el = business.query_selector(phone_sel)
                                 if phone_el:
-                                    phone = phone_el.inner_text().strip()
-                                    if phone and any(c.isdigit() for c in phone):
+                                    phone_text = phone_el.inner_text().strip()
+                                    if phone_text and any(c.isdigit() for c in phone_text):
                                         break
                             except:
                                 continue
@@ -394,7 +454,8 @@ def scrape_pj(query, city="", limit=50, debug=False):
                             '.bi-adresse',
                             '.adresse',
                             '.localite',
-                            '[data-bi="address"]'
+                            '[data-bi="address"]',
+                            '.bi-lieu'
                         ]
                         
                         address = ""
@@ -412,23 +473,25 @@ def scrape_pj(query, city="", limit=50, debug=False):
                         raw_data = {
                             'name': name,
                             'activity': query,
-                            'phone': phone,
+                            'phone': phone_text,  # Texte complet pour extraction corrigée
                             'email': email,
                             'address': address,
                             'page': page_count + 1,
                             'index': idx
                         }
                         
-                        # Normalisation
-                        normalized = normalize_data(raw_data, query, debug)
+                        # Normalisation CORRIGÉE
+                        normalized = normalize_data(raw_data, query, session_id, debug)
                         
                         # Validation : au moins nom + (phone OU email)
                         if normalized['name'] and (normalized['phone'] or normalized['email']):
                             results.append(normalized)
-                            log_info(f"Extrait {len(results)}/{limit}: {normalized['name']} (email: {'✓' if normalized['email'] else '✗'})", debug)
+                            phone_status = "📞" if normalized.get('phone') else ""
+                            email_status = "📧" if normalized.get('email') else ""
+                            log_info(f"Extrait PJ {len(results)}/{limit}: {phone_status}{email_status} {normalized['name'][:40]...}", debug)
                         
                     except Exception as e:
-                        log_error(f"Erreur extraction business page {page_count + 1}, item {idx}: {e}")
+                        log_error(f"Erreur extraction business PJ page {page_count + 1}, item {idx}: {e}")
                         continue
                 
                 # Passage page suivante
@@ -438,7 +501,8 @@ def scrape_pj(query, city="", limit=50, debug=False):
                             '.pagination-next:not(.disabled)',
                             '.suivant:not(.disabled)',
                             'a[aria-label="Page suivante"]',
-                            '.pager-next a'
+                            '.pager-next a',
+                            '.pagination .next'
                         ]
                         
                         next_clicked = False
@@ -449,17 +513,17 @@ def scrape_pj(query, city="", limit=50, debug=False):
                                     next_btn.click()
                                     time.sleep(random.uniform(2, 4))
                                     next_clicked = True
-                                    log_info(f"Page suivante cliquée ({next_sel})", debug)
+                                    log_info(f"Page suivante PJ cliquée ({next_sel})", debug)
                                     break
                             except:
                                 continue
                         
                         if not next_clicked:
-                            log_info("Pas de page suivante trouvée", debug)
+                            log_info("Pas de page suivante PJ trouvée", debug)
                             break
                             
                     except Exception as e:
-                        log_error(f"Erreur navigation page suivante: {e}")
+                        log_error(f"Erreur navigation page suivante PJ: {e}")
                         break
                 
                 page_count += 1
@@ -478,10 +542,11 @@ def scrape_pj(query, city="", limit=50, debug=False):
 
 def main():
     """Point d'entrée principal"""
-    parser = argparse.ArgumentParser(description='PagesJaunes Scraper v1.5 avec focus emails')
+    parser = argparse.ArgumentParser(description='PagesJaunes Scraper v2.0 avec extraction téléphone corrigée')
     parser.add_argument('query', help='Activité à rechercher (ex: "plombier")')
     parser.add_argument('--city', default='', help='Ville de recherche (ex: "Nantes")')
     parser.add_argument('--limit', type=int, default=50, help='Limite de résultats (défaut: 50)')
+    parser.add_argument('--session-id', default=None, help='ID de session pour tracking')
     parser.add_argument('--debug', action='store_true', help='Mode debug avec logs détaillés')
     
     args = parser.parse_args()
@@ -498,7 +563,8 @@ def main():
     # Scraping
     try:
         start_time = time.time()
-        results = scrape_pj(args.query, args.city, args.limit, args.debug)
+        results = scrape_pj(args.query, args.city, args.limit, 
+                           getattr(args, 'session_id'), args.debug)
         duration = time.time() - start_time
         
         # Stats si debug
@@ -507,11 +573,13 @@ def main():
             
             # Stat emails (spécificité PJ)
             email_count = sum(1 for r in results if r.get('email'))
+            phone_count = sum(1 for r in results if r.get('phone'))
             log_info(f"Emails récupérés: {email_count}/{len(results)} ({email_count/len(results)*100:.1f}%)" if results else "Aucun résultat", True)
+            log_info(f"Téléphones récupérés: {phone_count}/{len(results)}", True)
             
             # Stats mobiles
             mobile_count = sum(1 for r in results if r.get('mobile_detected'))
-            log_info(f"Téléphones mobiles: {mobile_count}/{len(results)}", True)
+            log_info(f"Téléphones mobiles: {mobile_count}/{phone_count}" if phone_count else "Pas de téléphones", True)
         
         # Output JSON Lines pour n8n
         for result in results:
