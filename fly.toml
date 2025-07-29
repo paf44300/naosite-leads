@@ -19,4 +19,5 @@ app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
     handlers = ["http","tls"]
     port = 443
     
-WEBHOOK_URL = "https://naosite-leads-mdvmcg.fly.dev"
+[env]
+  WEBHOOK_URL = "https://naosite-leads-mdvmcg.fly.dev"
