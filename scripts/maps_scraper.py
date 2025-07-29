@@ -10,7 +10,7 @@ import argparse
 import sys
 import logging
 from typing import List, Dict, Optional
-import re
+import requests
 from urllib.parse import quote_plus
 import random
 from datetime import datetime
