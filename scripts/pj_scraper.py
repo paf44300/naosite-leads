@@ -254,18 +254,18 @@ class SeleniumPJScraper:
             self.logger.error(f"Error extracting business: {e}")
             return None
     
-    def search_pages_jaunes(self, query: str, city: str, limit: int = 15) -> List[Dict]:
-        """Recherche avec Selenium"""
+    def search_pages_jaunes(self, query: str, city: str, limit: int = 15, page: int = 1) -> List[Dict]:
+        """Recherche avec Selenium avec support pagination"""
         results = []
         
         if not self.setup_driver():
             return self.generate_fallback_data(query, city, limit)
         
         try:
-            self.logger.info(f"Searching Pages Jaunes with Selenium: {query} in {city}")
+            self.logger.info(f"Searching Pages Jaunes with Selenium: {query} in {city} (page {page})")
             
-            # URL de recherche
-            search_url = f"https://www.pagesjaunes.fr/annuaire/chercherlesprofessionnels?quoi={quote_plus(query)}&ou={quote_plus(city)}"
+            # URL de recherche avec pagination
+            search_url = f"https://www.pagesjaunes.fr/annuaire/chercherlesprofessionnels?quoi={quote_plus(query)}&ou={quote_plus(city)}&page={page}"
             
             self.logger.debug(f"Accessing: {search_url}")
             self.driver.get(search_url)
@@ -305,6 +305,7 @@ class SeleniumPJScraper:
                         business_data.update({
                             'source': 'pages_jaunes_selenium',
                             'city': city,
+                            'page': page,
                             'scraped_at': datetime.now().isoformat(),
                             'session_id': self.session_id,
                             'has_email': bool(business_data.get('email'))
@@ -315,7 +316,23 @@ class SeleniumPJScraper:
                     self.logger.error(f"Error processing element {i}: {e}")
                     continue
             
-            self.logger.info(f"Extracted {len(results)} results")
+            # Vérifier s'il y a des pages suivantes
+            try:
+                next_page_elements = self.driver.find_elements(By.CSS_SELECTOR, '.pagination .next, .pagination a[title*="suivante"]')
+                has_next_page = len(next_page_elements) > 0 and any(elem.is_enabled() for elem in next_page_elements)
+                
+                # Ajouter info pagination aux métadonnées
+                for result in results:
+                    result['pagination_info'] = {
+                        'current_page': page,
+                        'has_next_page': has_next_page,
+                        'total_results_this_page': len(results)
+                    }
+                    
+            except Exception as e:
+                self.logger.debug(f"Could not check pagination: {e}")
+            
+            self.logger.info(f"Extracted {len(results)} results from page {page}")
             
         except Exception as e:
             self.logger.error(f"Selenium search failed: {e}")
@@ -326,6 +343,40 @@ class SeleniumPJScraper:
                 self.driver.quit()
                 
         return results[:limit]
+    
+    def search_multiple_pages(self, query: str, city: str, total_limit: int = 50, max_pages: int = 5) -> List[Dict]:
+        """Recherche sur plusieurs pages pour obtenir plus de résultats"""
+        all_results = []
+        page = 1
+        
+        while len(all_results) < total_limit and page <= max_pages:
+            self.logger.info(f"Fetching page {page}...")
+            
+            # Calculer combien de résultats on veut pour cette page
+            remaining = total_limit - len(all_results)
+            page_limit = min(remaining, 20)  # Pages Jaunes montre ~20 résultats par page
+            
+            page_results = self.search_pages_jaunes(query, city, page_limit, page)
+            
+            if not page_results:
+                self.logger.warning(f"No results on page {page}, stopping pagination")
+                break
+                
+            all_results.extend(page_results)
+            
+            # Vérifier s'il y a une page suivante
+            has_next = any(r.get('pagination_info', {}).get('has_next_page', False) for r in page_results)
+            if not has_next:
+                self.logger.info("No more pages available")
+                break
+                
+            page += 1
+            
+            # Délai entre les pages pour éviter le rate limiting
+            time.sleep(random.uniform(3, 6))
+        
+        self.logger.info(f"Total collected: {len(all_results)} results across {page-1} pages")
+        return all_results[:total_limit]
     
     def generate_fallback_data(self, query: str, city: str, limit: int) -> List[Dict]:
         """Données de fallback réalistes"""
@@ -375,6 +426,9 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--no-headless', action='store_true', help='Show browser (for debugging only)')
     parser.add_argument('--timeout', type=int, default=60, help='Maximum time per search (seconds)')
+    parser.add_argument('--page', type=int, default=1, help='Page number for pagination (default: 1)')
+    parser.add_argument('--multi-pages', action='store_true', help='Search multiple pages automatically')
+    parser.add_argument('--max-pages', type=int, default=5, help='Maximum pages to search when using --multi-pages')
     
     args = parser.parse_args()
     
@@ -385,11 +439,20 @@ def main():
             headless=not args.no_headless
         )
         
-        results = scraper.search_pages_jaunes(
-            query=args.query,
-            city=args.city,
-            limit=args.limit
-        )
+        if args.multi_pages:
+            results = scraper.search_multiple_pages(
+                query=args.query,
+                city=args.city,
+                total_limit=args.limit,
+                max_pages=args.max_pages
+            )
+        else:
+            results = scraper.search_pages_jaunes(
+                query=args.query,
+                city=args.city,
+                limit=args.limit,
+                page=args.page
+            )
         
         for result in results:
             print(json.dumps(result, ensure_ascii=False))
