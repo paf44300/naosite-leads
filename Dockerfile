@@ -21,10 +21,10 @@ RUN set -eux; \
 RUN npm install -g n8n@1.102.4 playwright@1.54.1 && \
     npx playwright install --with-deps chromium
 
-# ----------------------------------
-# Playwright Python avec fix environnement
-# ----------------------------------
-RUN pip install --break-system-packages playwright
+# ----------------------------------------------------
+# Python libraries (Playwright, Requests, BeautifulSoup)
+# ----------------------------------------------------
+RUN pip install --break-system-packages playwright requests beautifulsoup4
 
 # ---------------------------------------
 # Copie les scrapers Python dans /work
