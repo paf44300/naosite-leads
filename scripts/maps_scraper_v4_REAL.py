@@ -1,362 +1,423 @@
 #!/usr/bin/env python3
 """
-VRAI Google Maps Scraper v4.0 - EXTRACTION RÉELLE uniquement
-Finies les données fictives ! Extraction des vraies entreprises seulement.
+Google Maps Scraper v1.5 CORRIGÉ - Solution Immédiate pour Naosite
+Basé sur IMPLEMENTATION_GUIDE.md avec corrections critiques
 """
 
+import os
+import sys
 import json
 import time
-import argparse
-import sys
-import logging
-import re
-from typing import List, Dict, Optional
-import requests
-from urllib.parse import quote_plus, urlencode
 import random
+import argparse
 from datetime import datetime
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
-class RealMapsScraperV4:
-    def __init__(self, session_id: str = None, debug: bool = False):
-        self.session_id = session_id or f"real_maps_{int(time.time())}"
-        self.debug = debug
-        self.setup_logging()
-        
-        # VALIDATION STRICTE - Départements autorisés
-        self.VALID_DEPARTMENTS = ['44', '35', '29', '56', '85', '49', '53']
-        
-        # User agents réalistes
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ]
-        
-        self.session = requests.Session()
-        
-    def setup_logging(self):
-        level = logging.DEBUG if self.debug else logging.WARNING
-        logging.basicConfig(
-            level=level,
-            format=f'[{self.session_id}] %(levelname)s: %(message)s',
-            stream=sys.stderr
-        )
-        self.logger = logging.getLogger(__name__)
-        
-    def validate_department(self, address: str) -> Optional[str]:
-        """
-        VALIDATION STRICTE - Extrait et valide le code postal
-        Retourne le département si valide, None sinon
-        """
-        if not address:
-            return None
-            
-        # Recherche TOUS les codes postaux dans l'adresse
-        postal_patterns = [
-            r'\b(\d{5})\b',  # 44000
-            r'(\d{2})\s*\d{3}',  # 44 000 ou 44000
-            r'F-(\d{5})'  # F-44000
-        ]
-        
-        for pattern in postal_patterns:
-            matches = re.findall(pattern, address)
-            for match in matches:
-                postal_code = match if len(match) == 5 else match + '000'
-                dept = postal_code[:2]
-                
-                if dept in self.VALID_DEPARTMENTS:
-                    if self.debug:
-                        self.logger.info(f"✅ VALID DEPT: {postal_code} -> {dept}")
-                    return dept
-                    
-        if self.debug:
-            self.logger.warning(f"❌ NO VALID DEPT in: {address}")
-        return None
+# Configuration proxy Webshare
+PROXY_HOST = os.getenv("WEBSHARE_HOST", "proxy.webshare.io")
+PROXY_PORT = os.getenv("WEBSHARE_PORT", "8000")
+PROXY_USER = os.getenv("WEBSHARE_USERNAME")
+PROXY_PASS = os.getenv("WEBSHARE_PASSWORD")
+
+def normalize_data(raw_data):
+    """Normalise les données selon le schéma unifié"""
+    # Normalisation téléphone
+    phone = (raw_data.get('phone', '') or '').strip()
+    phone = ''.join(filter(str.isdigit, phone))
+    if phone.startswith('33'): phone = '+' + phone
+    elif phone.startswith('0'): phone = '+33' + phone[1:]
+    elif len(phone) == 9: phone = '+33' + phone
     
-    def extract_real_business_data(self, html_content: str, query: str) -> List[Dict]:
-        """
-        EXTRACTION RÉELLE des données business depuis le HTML de Google Maps
-        """
-        results = []
+    # Extraction ville avec patterns améliorés
+    address = raw_data.get('address', '') or ''
+    city_match = None
+    
+    # Patterns multiples pour extraction ville
+    import re
+    patterns = [
+        r'(\d{5})\s+([A-Z][a-z\s\-\']+)',  # 44000 Nantes
+        r'([A-Z][a-z\s\-\']+)\s+\((\d{5})\)',  # Nantes (44000)
+        r'([A-Z][a-z\s\-\']+),?\s+\d{5}',  # Nantes, 44000
+        r',\s*([A-Z][a-z\s\-\']+)$'  # ..., Nantes
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, address)
+        if match:
+            # Prendre le groupe qui contient la ville (pas le code postal)
+            groups = match.groups()
+            for group in groups:
+                if group and not group.isdigit() and len(group) > 2:
+                    city_match = group.strip()
+                    break
+            if city_match:
+                break
+    
+    return {
+        "name": (raw_data.get('name', '') or '').strip(),
+        "activity": normalize_activity(raw_data.get('activity', '')),
+        "phone": phone if len(phone) > 8 else None,
+        "email": None,  # Google Maps rarely has emails
+        "address": address,
+        "city": city_match or extract_city_fallback(address),
+        "website": None,  # Always null (filtering criteria)
+        "source": "google_maps",
+        "scraped_at": datetime.utcnow().isoformat() + "Z",
+        "raw_data": raw_data  # Pour debug
+    }
+
+def normalize_activity(activity):
+    """Standardise les activités"""
+    activity = (activity or '').lower()
+    if any(word in activity for word in ['plomb', 'sanitaire', 'plomberie']): return 'Plombier'
+    if any(word in activity for word in ['électr', 'electric', 'électricité']): return 'Électricien'
+    if any(word in activity for word in ['chauff', 'climat', 'chauffage']): return 'Chauffagiste'
+    if any(word in activity for word in ['maçon', 'macon', 'bâti', 'maçonnerie']): return 'Maçon'
+    if any(word in activity for word in ['couv', 'toiture']): return 'Couvreur'
+    if any(word in activity for word in ['menuis', 'bois']): return 'Menuisier'
+    if any(word in activity for word in ['peintre', 'peinture']): return 'Peintre'
+    return activity.title()
+
+def extract_city_fallback(address):
+    """Extraction ville fallback si patterns principaux échouent"""
+    if not address:
+        return ""
+    
+    # Diviser par virgules et prendre le segment le plus probable
+    segments = address.split(',')
+    for segment in segments:
+        segment = segment.strip()
+        if len(segment) > 2 and not segment.isdigit():
+            # Éviter les segments qui sont clairement des rues
+            if not any(word in segment.lower() for word in ['rue', 'avenue', 'boulevard', 'place', 'chemin']):
+                return segment
+    
+    # Dernier recours : prendre les mots qui ressemblent à une ville
+    import re
+    city_words = re.findall(r'\b[A-Z][a-z]{2,}\b', address)
+    if city_words:
+        return city_words[-1]  # Dernier mot capitalisé
+    
+    return ""
+
+def scrape_maps(query, city="", limit=50, offset=0):
+    """
+    Scraper Google Maps avec corrections critiques v1.5
+    - Pagination corrigée (incréments de 20 au lieu de 5)
+    - Sélecteurs CSS mis à jour pour 2025
+    - Anti-détection amélioré
+    """
+    results = []
+    
+    with sync_playwright() as p:
+        # Configuration navigateur avec proxy
+        browser_args = [
+            '--no-sandbox', 
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-extensions',
+            '--no-first-run',
+            '--disable-default-apps'
+        ]
+        
+        if PROXY_USER and PROXY_PASS:
+            proxy_config = {
+                "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+                "username": PROXY_USER,
+                "password": PROXY_PASS
+            }
+            browser = p.chromium.launch(headless=True, args=browser_args, proxy=proxy_config)
+        else:
+            browser = p.chromium.launch(headless=True, args=browser_args)
+        
+        context = browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            extra_http_headers={
+                'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            }
+        )
+        
+        # Masquer les traces d'automation
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+            });
+            window.chrome = {
+                runtime: {},
+            };
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5],
+            });
+        """)
+        
+        page = context.new_page()
         
         try:
-            soup = BeautifulSoup(html_content, 'html.parser')
+            # Construction URL avec pagination CORRIGÉE
+            search_query = f"{query} {city}".strip()
             
-            # Patterns de sélecteurs Google Maps (version 2024-2025)
+            # CORRECTION CRITIQUE : pagination par 20 (au lieu de 5)
+            # Selon la recherche technique, Google Maps pagine par blocs de 20
+            corrected_offset = (offset // 20) * 20  # Aligner sur multiples de 20
+            
+            maps_url = f"https://www.google.com/maps/search/{search_query}"
+            if corrected_offset > 0:
+                maps_url += f"/@46.603354,1.8883335,6z/data=!3m1!4b1!4m2!2m1!6e5?start={corrected_offset}"
+            
+            print(f"🔍 Searching Maps: {maps_url}", file=sys.stderr)
+            
+            page.goto(maps_url, wait_until='networkidle', timeout=30000)
+            time.sleep(random.uniform(3, 5))
+            
+            # Attendre que la carte se charge
+            page.wait_for_selector('div[role="main"]', timeout=10000)
+            
+            # SÉLECTEURS CSS MIS À JOUR (version 2025)
             business_selectors = [
-                'div[data-result-index]',  # Nouveau format
-                '.VkpGBb',  # Cards business
-                '.Z8fK3b',  # Résultats liste
-                'div[jsaction*="mouseover"]'  # Hover actions
+                'div[data-result-index]',  # Sélecteur principal
+                'div[role="article"]',     # Alternative 2025
+                '.Nv2PK',                  # Cards business
+                'a[data-result-index]',    # Liens business
+                '.VkpGBb',                 # Ancien format
+                '[jsaction*="mouseover"]'  # Hover elements
             ]
             
-            business_elements = []
+            businesses_found = []
+            
             for selector in business_selectors:
-                elements = soup.select(selector)
-                if elements:
-                    business_elements = elements
-                    self.logger.debug(f"Found {len(elements)} businesses with: {selector}")
-                    break
-            
-            if not business_elements:
-                self.logger.warning("No business elements found in HTML")
-                return []
-            
-            for i, element in enumerate(business_elements[:30]):  # Max 30 pour éviter spam
                 try:
-                    business_data = self.extract_single_business(element, query)
-                    if business_data:
-                        results.append(business_data)
-                        
+                    businesses = page.query_selector_all(selector)
+                    if businesses and len(businesses) > 0:
+                        businesses_found = businesses
+                        print(f"✅ Found {len(businesses)} businesses with selector: {selector}", file=sys.stderr)
+                        break
                 except Exception as e:
-                    self.logger.error(f"Error extracting business {i}: {e}")
+                    continue
+            
+            if not businesses_found:
+                # Fallback: scroll et recherche dynamique
+                print("🔄 No static elements found, trying dynamic scroll...", file=sys.stderr)
+                
+                for i in range(5):  # Max 5 scrolls
+                    page.evaluate("window.scrollBy(0, 800)")
+                    time.sleep(random.uniform(1, 2))
+                    
+                    # Recherche de nouveaux éléments après scroll
+                    for selector in business_selectors:
+                        businesses = page.query_selector_all(selector)
+                        if businesses:
+                            businesses_found.extend(businesses)
+                
+                # Déduplication
+                businesses_found = list(dict.fromkeys(businesses_found))
+            
+            # Extraction des données business
+            for i, business in enumerate(businesses_found[:limit]):
+                try:
+                    # Vérifier que l'élément est visible
+                    if not business.is_visible():
+                        continue
+                    
+                    # EXTRACTION AMÉLIORÉE
+                    name = None
+                    name_selectors = ['h3', '.fontHeadlineSmall', '.qBF1Pd', '.fontDisplayLarge']
+                    for selector in name_selectors:
+                        name_elem = business.query_selector(selector)
+                        if name_elem:
+                            name = name_elem.inner_text().strip()
+                            if name:
+                                break
+                    
+                    if not name:
+                        continue
+                    
+                    # Vérifier absence site web (critère de filtrage)
+                    website_button = business.query_selector('[aria-label*="Site"], [aria-label*="Website"], a[href^="http"]:not([href*="google"])')
+                    if website_button:
+                        print(f"❌ Skipping {name} - has website", file=sys.stderr)
+                        continue
+                    
+                    # Téléphone
+                    phone = ""
+                    phone_selectors = [
+                        '[aria-label*="Téléphone"]', '[aria-label*="Phone"]',
+                        'a[href^="tel:"]', '.fontBodyMedium'
+                    ]
+                    for selector in phone_selectors:
+                        phone_elem = business.query_selector(selector)
+                        if phone_elem:
+                            phone_text = phone_elem.get_attribute('aria-label') or phone_elem.inner_text()
+                            if phone_text and ('0' in phone_text or '+' in phone_text):
+                                phone = phone_text
+                                break
+                    
+                    # Adresse
+                    address = ""
+                    address_selectors = [
+                        '.W4Efsd:nth-of-type(2)', '.fontBodyMedium', '[title]'
+                    ]
+                    for selector in address_selectors:
+                        addr_elem = business.query_selector(selector)
+                        if addr_elem:
+                            addr_text = addr_elem.get_attribute('title') or addr_elem.inner_text()
+                            if addr_text and len(addr_text) > 10:
+                                address = addr_text
+                                break
+                    
+                    if name:  # Au minimum un nom
+                        raw_data = {
+                            'name': name,
+                            'activity': query,
+                            'phone': phone,
+                            'address': address
+                        }
+                        
+                        normalized = normalize_data(raw_data)
+                        results.append(normalized)
+                        
+                        print(f"✅ Extracted: {name}", file=sys.stderr)
+                        
+                        if len(results) >= limit:
+                            break
+                            
+                except Exception as e:
+                    print(f"❌ Error extracting business {i}: {e}", file=sys.stderr)
                     continue
                     
         except Exception as e:
-            self.logger.error(f"HTML parsing failed: {e}")
-            
-        return results
+            print(f"❌ Maps scraping error: {e}", file=sys.stderr)
+        finally:
+            browser.close()
     
-    def extract_single_business(self, element, query: str) -> Optional[Dict]:
-        """
-        Extrait UNE entreprise réelle depuis un élément HTML
-        """
-        data = {
-            'name': None,
-            'address': None,
-            'phone': None,
-            'website': None,
-            'rating': None,
-            'reviews_count': None
-        }
-        
-        try:
-            # EXTRACTION NOM - Multiples sélecteurs
-            name_selectors = [
-                'h3', '.fontHeadlineSmall', '.qBF1Pd', '.fontDisplayLarge',
-                '[data-value="name"]', '.section-result-title'
-            ]
-            
-            for selector in name_selectors:
-                name_elem = element.select_one(selector)
-                if name_elem and name_elem.get_text(strip=True):
-                    data['name'] = name_elem.get_text(strip=True)[:150]
-                    break
-            
-            # EXTRACTION ADRESSE RÉELLE
-            address_selectors = [
-                '.W4Efsd:nth-of-type(1)', '.Z8fK3b span', '.section-result-location',
-                '[data-value="address"]', '.fontBodyMedium'
-            ]
-            
-            for selector in address_selectors:
-                addr_elem = element.select_one(selector)
-                if addr_elem and addr_elem.get_text(strip=True):
-                    address_text = addr_elem.get_text(strip=True)
-                    # Vérifier que c'est bien une adresse (contient chiffres)
-                    if re.search(r'\d', address_text):
-                        data['address'] = address_text[:200]
-                        break
-            
-            # EXTRACTION TÉLÉPHONE RÉEL
-            phone_selectors = [
-                'a[href^="tel:"]', '.fontBodyMedium', '[data-value="phone_number"]'
-            ]
-            
-            for selector in phone_selectors:
-                phone_elem = element.select_one(selector)
-                if phone_elem:
-                    phone_text = phone_elem.get('href') or phone_elem.get_text()
-                    if phone_text:
-                        if phone_text.startswith('tel:'):
-                            phone_text = phone_text[4:]
-                        # Nettoyer et valider le téléphone français
-                        phone_clean = re.sub(r'[^\d+]', '', phone_text)
-                        if len(phone_clean) >= 10 and (phone_clean.startswith('0') or phone_clean.startswith('+33')):
-                            data['phone'] = phone_text.strip()
-                            break
-            
-            # EXTRACTION WEBSITE RÉEL
-            website_links = element.select('a[href^="http"]:not([href*="google.com"]):not([href*="maps.google"])')
-            for link in website_links:
-                href = link.get('href')
-                if href and len(href) > 10:
-                    data['website'] = href[:200]
-                    break
-            
-            # EXTRACTION RATING & REVIEWS
-            rating_elem = element.select_one('.MW4etd, .fontBodyMedium')
-            if rating_elem:
-                rating_text = rating_elem.get_text()
-                rating_match = re.search(r'(\d,\d|\d\.\d)', rating_text)
-                if rating_match:
-                    data['rating'] = float(rating_match.group(1).replace(',', '.'))
-                    
-                reviews_match = re.search(r'\((\d+)\)', rating_text)
-                if reviews_match:
-                    data['reviews_count'] = int(reviews_match.group(1))
-            
-            # VALIDATION FINALE
-            if not data['name'] or len(data['name']) < 3:
-                return None
-                
-            # VALIDATION DÉPARTEMENT si adresse disponible
-            if data['address']:
-                dept = self.validate_department(data['address'])
-                if not dept:
-                    if self.debug:
-                        self.logger.warning(f"❌ REJECTED - Invalid dept: {data['name']} - {data['address']}")
-                    return None
-                data['department'] = dept
-                data['geo_validated'] = True
-            else:
-                # Pas d'adresse = pas de validation possible
-                if self.debug:
-                    self.logger.warning(f"⚠️ NO ADDRESS: {data['name']}")
-                return None
-            
-            # Compléter les métadonnées
-            data.update({
-                'activity': query.title(),
-                'source': 'google_maps_real_v4',
-                'scraped_at': datetime.now().isoformat(),
-                'session_id': self.session_id,
-                'extracted_from': 'real_html'
-            })
-            
-            if self.debug:
-                self.logger.info(f"✅ EXTRACTED: {data['name']} - {data['address']}")
-                
-            return data
-            
-        except Exception as e:
-            self.logger.error(f"Single business extraction failed: {e}")
-            return None
-    
-    def search_google_maps(self, query: str, city: str, limit: int = 20, offset: int = 0) -> List[Dict]:
-        """
-        Recherche RÉELLE sur Google Maps avec HTTP requests
-        """
-        self.logger.info(f"REAL Google Maps search: {query} in {city} (limit: {limit}, offset: {offset})")
-        
-        try:
-            # Headers réalistes
-            headers = {
-                'User-Agent': random.choice(self.user_agents),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Cache-Control': 'max-age=0'
-            }
-            
-            self.session.headers.update(headers)
-            
-            # Construction de l'URL de recherche RÉELLE
-            search_query = f"{query} {city}".strip()
-            encoded_query = quote_plus(search_query)
-            
-            # Différentes approches d'URL Google Maps
-            search_urls = [
-                f"https://www.google.com/maps/search/{encoded_query}",
-                f"https://maps.google.com/maps?q={encoded_query}",
-                f"https://www.google.fr/maps/search/{encoded_query}"
-            ]
-            
-            results = []
-            
-            for attempt, url in enumerate(search_urls):
-                try:
-                    self.logger.debug(f"Trying URL {attempt + 1}: {url}")
-                    
-                    # Délai réaliste
-                    time.sleep(random.uniform(2, 4))
-                    
-                    response = self.session.get(url, timeout=15)
-                    
-                    if response.status_code == 200:
-                        self.logger.info(f"✅ Got HTML response ({len(response.text)} chars)")
-                        
-                        # EXTRACTION RÉELLE depuis le HTML
-                        businesses = self.extract_real_business_data(response.text, query)
-                        
-                        if businesses:
-                            results.extend(businesses)
-                            self.logger.info(f"✅ Extracted {len(businesses)} real businesses")
-                            break
-                        else:
-                            self.logger.warning("No businesses extracted from HTML")
-                            
-                    elif response.status_code == 429:
-                        self.logger.warning("Rate limited, waiting...")
-                        time.sleep(random.uniform(10, 20))
-                        continue
-                        
-                    else:
-                        self.logger.warning(f"HTTP {response.status_code} on attempt {attempt + 1}")
-                        
-                except requests.exceptions.RequestException as e:
-                    self.logger.error(f"Request failed on attempt {attempt + 1}: {e}")
-                    if attempt < len(search_urls) - 1:
-                        time.sleep(random.uniform(5, 10))
-                        continue
-                    else:
-                        self.logger.error("All request attempts failed")
-                        break
-            
-            # Appliquer limit et offset
-            start_idx = offset
-            end_idx = offset + limit
-            final_results = results[start_idx:end_idx]
-            
-            self.logger.info(f"🎯 FINAL: {len(final_results)} businesses (offset: {offset}, limit: {limit})")
-            
-            return final_results
-            
-        except Exception as e:
-            self.logger.error(f"Google Maps search failed: {e}")
-            return []
+    return results
 
-def main():
-    parser = argparse.ArgumentParser(description='REAL Google Maps Scraper v4.0 - Vraies données uniquement')
-    parser.add_argument('query', help='Search query (e.g., "plombier")')
-    parser.add_argument('--city', required=True, help='Code postal to search in (e.g., "44000")')
-    parser.add_argument('--limit', type=int, default=20, help='Number of results to return')
-    parser.add_argument('--offset', type=int, default=0, help='Offset for pagination')
-    parser.add_argument('--session-id', help='Session ID for tracking')
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+# Script PJ corrigé également
+def scrape_pj(query, city="", limit=15):
+    """Pages Jaunes scraper corrigé v1.5"""
+    results = []
+    
+    with sync_playwright() as p:
+        # Configuration identique à Maps
+        browser_args = ['--no-sandbox', '--disable-dev-shm-usage']
+        if PROXY_USER and PROXY_PASS:
+            proxy_config = {
+                "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+                "username": PROXY_USER,
+                "password": PROXY_PASS
+            }
+            browser = p.chromium.launch(headless=True, args=browser_args, proxy=proxy_config)
+        else:
+            browser = p.chromium.launch(headless=True, args=browser_args)
+        
+        context = browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        )
+        
+        page = context.new_page()
+        
+        try:
+            # URL PJ corrigée
+            search_query = f"{query} {city}".strip()
+            pj_url = f"https://www.pagesjaunes.fr/annuaire/chercherlesprofessionnels?quoi={query}&ou={city}"
+            
+            page.goto(pj_url, wait_until='networkidle')
+            time.sleep(random.uniform(3, 5))
+            
+            # Sélecteurs PJ mis à jour
+            business_selectors = [
+                '.bi',
+                '.bi-bloc',
+                '.search-result',
+                '.listing-item',
+                'article[data-pj-listing]'
+            ]
+            
+            businesses_found = []
+            for selector in business_selectors:
+                businesses = page.query_selector_all(selector)
+                if businesses:
+                    businesses_found = businesses
+                    print(f"✅ Found {len(businesses)} PJ businesses with: {selector}", file=sys.stderr)
+                    break
+            
+            for business in businesses_found[:limit]:
+                try:
+                    # Nom
+                    name_elem = business.query_selector('.bi-denomination, .denomination-links, h3.denomination')
+                    name = name_elem.inner_text().strip() if name_elem else ""
+                    
+                    if not name:
+                        continue
+                    
+                    # Email (spécificité PJ)
+                    email = ""
+                    email_elem = business.query_selector('a[href^="mailto:"]')
+                    if email_elem:
+                        email = email_elem.get_attribute('href').replace('mailto:', '')
+                    
+                    # Téléphone
+                    phone = ""
+                    phone_elem = business.query_selector('.bi-numero, a[href^="tel:"]')
+                    if phone_elem:
+                        phone = phone_elem.get_attribute('href') or phone_elem.inner_text()
+                        if phone.startswith('tel:'):
+                            phone = phone[4:]
+                    
+                    # Adresse
+                    address = ""
+                    addr_elem = business.query_selector('.bi-adresse')
+                    if addr_elem:
+                        address = addr_elem.inner_text()
+                    
+                    if name and (phone or email):
+                        raw_data = {
+                            'name': name,
+                            'activity': query,
+                            'phone': phone,
+                            'email': email,
+                            'address': address
+                        }
+                        
+                        normalized = normalize_data(raw_data)
+                        normalized['email'] = email  # Préserver email PJ
+                        normalized['source'] = 'pages_jaunes'
+                        results.append(normalized)
+                        
+                        print(f"✅ PJ Extracted: {name}" + (f" (email: {email})" if email else ""), file=sys.stderr)
+                        
+                except Exception as e:
+                    print(f"❌ PJ extraction error: {e}", file=sys.stderr)
+                    continue
+                    
+        except Exception as e:
+            print(f"❌ PJ scraping error: {e}", file=sys.stderr)
+        finally:
+            browser.close()
+    
+    return results
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("query", help="Activité à rechercher")
+    parser.add_argument("--city", default="", help="Ville")
+    parser.add_argument("--limit", type=int, default=50, help="Limite résultats")
+    parser.add_argument("--offset", type=int, default=0, help="Offset pour pagination")
+    parser.add_argument("--debug", action="store_true", help="Mode debug")
+    parser.add_argument("--source", choices=['maps', 'pj'], default='maps', help="Source à scraper")
     
     args = parser.parse_args()
     
-    try:
-        scraper = RealMapsScraperV4(
-            session_id=args.session_id,
-            debug=args.debug
-        )
-        
-        results = scraper.search_google_maps(
-            query=args.query,
-            city=args.city,
-            limit=args.limit,
-            offset=args.offset
-        )
-        
-        # Output JSON pour n8n (un objet par ligne)
-        for result in results:
-            print(json.dumps(result, ensure_ascii=False))
-            
-        if args.debug:
-            valid_count = len([r for r in results if r.get('geo_validated')])
-            logging.info(f"SUCCESS: {len(results)} real results ({valid_count} geo-validated)")
-            
-    except Exception as e:
-        logging.error(f"Real scraper failed: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+    if args.source == 'maps':
+        results = scrape_maps(args.query, args.city, args.limit, args.offset)
+    else:
+        results = scrape_pj(args.query, args.city, args.limit)
+    
+    if args.debug:
+        print(f"✅ {args.source.upper()} Scraper: {len(results)} résultats pour '{args.query}'", file=sys.stderr)
+    
+    # Output JSON lines pour n8n
+    for result in results:
+        print(json.dumps(result, ensure_ascii=False))
