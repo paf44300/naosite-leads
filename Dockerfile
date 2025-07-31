@@ -56,6 +56,7 @@ RUN npm install -g n8n@1.102.4 playwright@1.54.1 && \
 # ----------------------------------------------------
 RUN pip install --break-system-packages \
     playwright \
+    playwright-stealth \
     requests \
     beautifulsoup4 \
     selenium \
