@@ -1,361 +1,605 @@
 #!/usr/bin/env python3
 """
-VRAI Google Maps Scraper v4.0 - EXTRACTION RÉELLE uniquement
-Finies les données fictives ! Extraction des vraies entreprises seulement.
+Google Maps Scraper v2.0 - CORRIGÉ avec extraction téléphone anti-horaires
+Usage: python maps_scraper.py "plombier" --city "Nantes" --limit 5 --offset 10 --session-id "abc123"
 """
 
+import os
+import sys
 import json
 import time
-import argparse
-import sys
-import logging
-import re
-from typing import List, Dict, Optional
-import requests
-from urllib.parse import quote_plus, urlencode
 import random
-from datetime import datetime
-from bs4 import BeautifulSoup
+import argparse
+import re
+from datetime import datetime, timezone
+from urllib.parse import quote_plus
 
-class RealMapsScraperV4:
-    def __init__(self, session_id: str = None, debug: bool = False):
-        self.session_id = session_id or f"real_maps_{int(time.time())}"
-        self.debug = debug
-        self.setup_logging()
-        
-        # VALIDATION STRICTE - Départements autorisés
-        self.VALID_DEPARTMENTS = ['44', '35', '29', '56', '85', '49', '53']
-        
-        # User agents réalistes
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ]
-        
-        self.session = requests.Session()
-        
-    def setup_logging(self):
-        level = logging.DEBUG if self.debug else logging.WARNING
-        logging.basicConfig(
-            level=level,
-            format=f'[{self.session_id}] %(levelname)s: %(message)s',
-            stream=sys.stderr
-        )
-        self.logger = logging.getLogger(__name__)
-        
-    def validate_department(self, address: str) -> Optional[str]:
-        """
-        VALIDATION STRICTE - Extrait et valide le code postal
-        Retourne le département si valide, None sinon
-        """
-        if not address:
-            return None
-            
-        # Recherche TOUS les codes postaux dans l'adresse
-        postal_patterns = [
-            r'\b(\d{5})\b',  # 44000
-            r'(\d{2})\s*\d{3}',  # 44 000 ou 44000
-            r'F-(\d{5})'  # F-44000
-        ]
-        
-        for pattern in postal_patterns:
-            matches = re.findall(pattern, address)
-            for match in matches:
-                postal_code = match if len(match) == 5 else match + '000'
-                dept = postal_code[:2]
-                
-                if dept in self.VALID_DEPARTMENTS:
-                    if self.debug:
-                        self.logger.info(f"✅ VALID DEPT: {postal_code} -> {dept}")
-                    return dept
-                    
-        if self.debug:
-            self.logger.warning(f"❌ NO VALID DEPT in: {address}")
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    print("ERREUR: Playwright non installé. Run: pip install playwright", file=sys.stderr)
+    sys.exit(1)
+
+def log_error(message):
+    """Log erreur vers stderr pour n8n monitoring"""
+    print(f"[MAPS_SCRAPER ERROR] {message}", file=sys.stderr)
+
+def log_info(message, debug=False):
+    """Log info vers stderr si debug activé"""
+    if debug:
+        print(f"[MAPS_SCRAPER INFO] {message}", file=sys.stderr)
+
+def extract_clean_phone_maps(business_text, debug=False):
+    """
+    CORRECTION CRITIQUE : Extraction téléphone anti-contamination horaires
+    """
+    if not business_text or len(business_text) > 500:
         return None
     
-    def extract_real_business_data(self, html_content: str, query: str) -> List[Dict]:
-        """
-        EXTRACTION RÉELLE des données business depuis le HTML de Google Maps
-        """
-        results = []
-        
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Patterns de sélecteurs Google Maps (version 2024-2025)
-            business_selectors = [
-                'div[data-result-index]',  # Nouveau format
-                '.VkpGBb',  # Cards business
-                '.Z8fK3b',  # Résultats liste
-                'div[jsaction*="mouseover"]'  # Hover actions
-            ]
-            
-            business_elements = []
-            for selector in business_selectors:
-                elements = soup.select(selector)
-                if elements:
-                    business_elements = elements
-                    self.logger.debug(f"Found {len(elements)} businesses with: {selector}")
-                    break
-            
-            if not business_elements:
-                self.logger.warning("No business elements found in HTML")
-                return []
-            
-            for i, element in enumerate(business_elements[:30]):  # Max 30 pour éviter spam
-                try:
-                    business_data = self.extract_single_business(element, query)
-                    if business_data:
-                        results.append(business_data)
-                        
-                except Exception as e:
-                    self.logger.error(f"Error extracting business {i}: {e}")
-                    continue
-                    
-        except Exception as e:
-            self.logger.error(f"HTML parsing failed: {e}")
-            
-        return results
+    # Séparer le texte en lignes pour analyse ligne par ligne
+    lines = business_text.split('\n')
     
-    def extract_single_business(self, element, query: str) -> Optional[Dict]:
-        """
-        Extrait UNE entreprise réelle depuis un élément HTML
-        """
-        data = {
-            'name': None,
-            'address': None,
-            'phone': None,
-            'website': None,
-            'rating': None,
-            'reviews_count': None
+    for line in lines:
+        line = line.strip()
+        
+        # SKIP explicite des lignes contenant des horaires
+        if re.search(r'\b(?:open|closed|ouvert|fermé|hours|horaires)\b', line.lower()):
+            if debug:
+                log_info(f"Ligne ignorée (horaires): {line[:50]}", True)
+            continue
+            
+        # SKIP lignes avec patterns d'heures : 21h, 22:00, etc.
+        if re.search(r'\b(?:2[0-4]|1[0-9])[h:]?\d{0,2}\b', line):
+            if debug:
+                log_info(f"Ligne ignorée (heures): {line[:50]}", True)
+            continue
+            
+        # SKIP lignes avec jours de la semaine
+        if re.search(r'\b(?:lun|mar|mer|jeu|ven|sam|dim|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b', line.lower()):
+            if debug:
+                log_info(f"Ligne ignorée (jours): {line[:50]}", True)
+            continue
+        
+        # Chercher téléphone sur ligne "propre"
+        phone_patterns = [
+            r'(\+33[1-9](?:\d[\s\.-]?){8})',  # +33 format
+            r'(0[1-9](?:\d[\s\.-]?){8})',     # 0X format français
+        ]
+        
+        for pattern in phone_patterns:
+            match = re.search(pattern, line)
+            if match:
+                raw_phone = match.group(1)
+                
+                # Validation supplémentaire : rejeter si ressemble à horaire
+                digits_only = re.sub(r'\D', '', raw_phone)
+                if len(digits_only) >= 9:
+                    # Vérifier que les 2-3 premiers chiffres ne sont pas des heures
+                    first_two = digits_only[:2]
+                    if first_two.startswith('0') or int(first_two) <= 24:
+                        # C'est probablement un téléphone valide
+                        if debug:
+                            log_info(f"Téléphone trouvé: {raw_phone} (ligne: {line[:50]})", True)
+                        return normalize_phone(raw_phone)
+    
+    return None
+
+def normalize_phone(phone_raw):
+    """Normalise téléphone au format E.164 français"""
+    if not phone_raw:
+        return None
+    
+    # Nettoyer : garder que les chiffres
+    phone = re.sub(r'\D', '', str(phone_raw))
+    
+    if not phone or len(phone) < 9:
+        return None
+    
+    # Normalisation selon patterns français
+    if phone.startswith('33'):
+        phone = '+' + phone
+    elif phone.startswith('0'):
+        phone = '+33' + phone[1:]
+    elif len(phone) == 9:
+        phone = '+33' + phone
+    
+    # Validation longueur finale (téléphones français)
+    if len(phone) < 12 or len(phone) > 15:
+        return None
+        
+    return phone
+
+def normalize_activity(activity):
+    """Standardise les activités selon les règles métier"""
+    if not activity:
+        return "Service"
+    
+    activity = activity.lower().strip()
+    
+    # Mapping des activités
+    activity_map = {
+        'plomb': 'Plombier',
+        'sanitaire': 'Plombier',
+        'électr': 'Électricien',
+        'electric': 'Électricien',
+        'chauff': 'Chauffagiste',
+        'climat': 'Chauffagiste',
+        'maçon': 'Maçon',
+        'macon': 'Maçon',
+        'couvreur': 'Couvreur',
+        'toiture': 'Couvreur',
+        'menuisier': 'Menuisier',
+        'peintre': 'Peintre',
+        'carreleur': 'Carreleur',
+        'serrurier': 'Serrurier'
+    }
+    
+    for key, value in activity_map.items():
+        if key in activity:
+            return value
+    
+    return activity.title()
+
+def extract_city_from_address(address):
+    """Extrait la ville depuis une adresse complète"""
+    if not address:
+        return ""
+    
+    # Patterns pour extraire ville depuis adresse Google Maps
+    patterns = [
+        r'(\d{5})\s+([A-Z][a-zÀ-ÿ\s\-\']+)(?:,|$)',  # 44000 Nantes
+        r'([A-Z][a-zÀ-ÿ\s\-\']+),?\s+(\d{5})',       # Nantes, 44000  
+        r'([A-Z][a-zÀ-ÿ\s\-\']+)(?:,\s*France)?$',   # Nantes, France
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, address)
+        if match:
+            # Si le pattern contient un code postal, prendre le nom de ville
+            if len(match.groups()) == 2:
+                if match.group(1).isdigit():
+                    return match.group(2).strip()
+                else:
+                    return match.group(1).strip()
+            else:
+                return match.group(1).strip()
+    
+    # Fallback : dernier élément avant France
+    parts = address.split(',')
+    for i in range(len(parts) - 1, -1, -1):
+        part = parts[i].strip()
+        if part and part != 'France' and not part.isdigit():
+            return part
+    
+    return address.split(',')[0].strip()
+
+def normalize_data(raw_data, query, session_id=None, debug=False):
+    """Normalise les données selon le schéma unifié Naosite"""
+    
+    # Extraction téléphone CORRIGÉE
+    phone = extract_clean_phone_maps(raw_data.get('business_text', '') or '', debug)
+    
+    # Extraction ville propre
+    address = raw_data.get('address', '') or ''
+    city = extract_city_from_address(address)
+    
+    # Nom entreprise nettoyé
+    name = (raw_data.get('name', '') or '').strip()
+    if len(name) > 150:
+        name = name[:150] + '...'
+    
+    # Activité standardisée
+    activity = raw_data.get('activity') or query or ''
+    normalized_activity = normalize_activity(activity)
+    
+    # Calculs dérivés
+    normalized_phone_digits = phone.replace('+', '').replace('-', '').replace(' ', '') if phone else ''
+    mobile_detected = bool(phone and re.match(r'^\+33[67]', phone))
+    
+    # Extraction code postal
+    postal_match = re.search(r'\b(\d{5})\b', address)
+    city_code = postal_match.group(1) if postal_match else None
+    
+    result = {
+        "name": name,
+        "activity": normalized_activity,
+        "phone": phone,
+        "email": None,  # Google Maps rarement emails
+        "address": address,
+        "city": city,
+        "website": None,  # Toujours null (critère de filtrage)
+        "source": "google_maps",
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+        
+        # Champs calculés pour le scoring
+        "normalized_phone": normalized_phone_digits,
+        "mobile_detected": mobile_detected,
+        "city_code": city_code,
+        
+        # Métadonnées session/debug
+        "_session_id": session_id,
+        "_scraper_source": "maps",
+        "raw_data": raw_data if debug else None
+    }
+    
+    # Nettoyer les None si pas debug
+    if not debug:
+        result = {k: v for k, v in result.items() if v is not None}
+    
+    return result
+
+def scrape_maps(query, city="", limit=50, offset=0, session_id=None, debug=False):
+    """
+    Scraper Google Maps avec anti-détection et offset CORRIGÉ
+    """
+    results = []
+    
+    log_info(f"=== DÉMARRAGE SCRAPING MAPS v2.0 ===", debug)
+    log_info(f"Query: '{query}', City: '{city}', Limit: {limit}, Offset: {offset}", debug)
+    log_info(f"Session: {session_id}", debug)
+    
+    with sync_playwright() as p:
+        browser_args = [
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-extensions',
+            '--no-first-run',
+            '--disable-default-apps'
+        ]
+
+        # Configuration du proxy WEBSHARE en dur
+        browser_kwargs = {
+            'headless': True,
+            'args': browser_args,
+            'proxy': {
+                "server": "http://p.webshare.io:80",
+                "username": "xftpfnvt-1",
+                "password": "yulnmnbiq66j"
+            }
         }
         
-        try:
-            # EXTRACTION NOM - Multiples sélecteurs
-            name_selectors = [
-                'h3', '.fontHeadlineSmall', '.qBF1Pd', '.fontDisplayLarge',
-                '[data-value="name"]', '.section-result-title'
-            ]
-            
-            for selector in name_selectors:
-                name_elem = element.select_one(selector)
-                if name_elem and name_elem.get_text(strip=True):
-                    data['name'] = name_elem.get_text(strip=True)[:150]
-                    break
-            
-            # EXTRACTION ADRESSE RÉELLE
-            address_selectors = [
-                '.W4Efsd:nth-of-type(1)', '.Z8fK3b span', '.section-result-location',
-                '[data-value="address"]', '.fontBodyMedium'
-            ]
-            
-            for selector in address_selectors:
-                addr_elem = element.select_one(selector)
-                if addr_elem and addr_elem.get_text(strip=True):
-                    address_text = addr_elem.get_text(strip=True)
-                    # Vérifier que c'est bien une adresse (contient chiffres)
-                    if re.search(r'\d', address_text):
-                        data['address'] = address_text[:200]
-                        break
-            
-            # EXTRACTION TÉLÉPHONE RÉEL
-            phone_selectors = [
-                'a[href^="tel:"]', '.fontBodyMedium', '[data-value="phone_number"]'
-            ]
-            
-            for selector in phone_selectors:
-                phone_elem = element.select_one(selector)
-                if phone_elem:
-                    phone_text = phone_elem.get('href') or phone_elem.get_text()
-                    if phone_text:
-                        if phone_text.startswith('tel:'):
-                            phone_text = phone_text[4:]
-                        # Nettoyer et valider le téléphone français
-                        phone_clean = re.sub(r'[^\d+]', '', phone_text)
-                        if len(phone_clean) >= 10 and (phone_clean.startswith('0') or phone_clean.startswith('+33')):
-                            data['phone'] = phone_text.strip()
-                            break
-            
-            # EXTRACTION WEBSITE RÉEL
-            website_links = element.select('a[href^="http"]:not([href*="google.com"]):not([href*="maps.google"])')
-            for link in website_links:
-                href = link.get('href')
-                if href and len(href) > 10:
-                    data['website'] = href[:200]
-                    break
-            
-            # EXTRACTION RATING & REVIEWS
-            rating_elem = element.select_one('.MW4etd, .fontBodyMedium')
-            if rating_elem:
-                rating_text = rating_elem.get_text()
-                rating_match = re.search(r'(\d,\d|\d\.\d)', rating_text)
-                if rating_match:
-                    data['rating'] = float(rating_match.group(1).replace(',', '.'))
-                    
-                reviews_match = re.search(r'\((\d+)\)', rating_text)
-                if reviews_match:
-                    data['reviews_count'] = int(reviews_match.group(1))
-            
-            # VALIDATION FINALE
-            if not data['name'] or len(data['name']) < 3:
-                return None
-                
-            # VALIDATION DÉPARTEMENT si adresse disponible
-            if data['address']:
-                dept = self.validate_department(data['address'])
-                if not dept:
-                    if self.debug:
-                        self.logger.warning(f"❌ REJECTED - Invalid dept: {data['name']} - {data['address']}")
-                    return None
-                data['department'] = dept
-                data['geo_validated'] = True
-            else:
-                # Pas d'adresse = pas de validation possible
-                if self.debug:
-                    self.logger.warning(f"⚠️ NO ADDRESS: {data['name']}")
-                return None
-            
-            # Compléter les métadonnées
-            data.update({
-                'activity': query.title(),
-                'source': 'google_maps_real_v4',
-                'scraped_at': datetime.now().isoformat(),
-                'session_id': self.session_id,
-                'extracted_from': 'real_html'
-            })
-            
-            if self.debug:
-                self.logger.info(f"✅ EXTRACTED: {data['name']} - {data['address']}")
-                
-            return data
-            
-        except Exception as e:
-            self.logger.error(f"Single business extraction failed: {e}")
-            return None
-    
-    def search_google_maps(self, query: str, city: str, limit: int = 20, offset: int = 0) -> List[Dict]:
-        """
-        Recherche RÉELLE sur Google Maps avec HTTP requests
-        """
-        self.logger.info(f"REAL Google Maps search: {query} in {city} (limit: {limit}, offset: {offset})")
+        log_info("Proxy Webshare configuré: xftpfnvt-1@p.webshare.io:80", debug)
+
+        browser = p.chromium.launch(**browser_kwargs)
+
+        # Context avec user agent réaliste
+        context = browser.new_context(
+            viewport={'width': 1366, 'height': 768},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='fr-FR'
+        )
+        
+        page = context.new_page()
         
         try:
-            # Headers réalistes
-            headers = {
-                'User-Agent': random.choice(self.user_agents),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Cache-Control': 'max-age=0'
-            }
-            
-            self.session.headers.update(headers)
-            
-            # Construction de l'URL de recherche RÉELLE
+            # Construction URL de recherche
             search_query = f"{query} {city}".strip()
-            encoded_query = quote_plus(search_query)
+            maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
             
-            # Différentes approches d'URL Google Maps
-            search_urls = [
-                f"https://www.google.com/maps/search/{encoded_query}",
-                f"https://maps.google.com/maps?q={encoded_query}",
-                f"https://www.google.fr/maps/search/{encoded_query}"
+            log_info(f"URL Maps: {maps_url}", debug)
+            
+            # Navigation avec timeout
+            page.goto(maps_url, wait_until='domcontentloaded', timeout=30000)
+            
+            # Attente chargement initial
+            time.sleep(random.uniform(3, 5))
+            
+            # Accepter cookies si présent
+            try:
+                accept_buttons = page.query_selector_all('button')
+                for btn in accept_buttons:
+                    text = btn.inner_text().lower()
+                    if 'accepter' in text or 'accept' in text or 'tout accepter' in text:
+                        btn.click()
+                        time.sleep(1)
+                        log_info("Cookies acceptés", debug)
+                        break
+            except:
+                pass
+            
+            # Attendre que les résultats soient visibles
+            try:
+                page.wait_for_selector('[role="main"]', timeout=10000)
+                log_info("Zone de résultats trouvée", debug)
+            except:
+                log_error("Zone de résultats non trouvée")
+            
+            # Scroll pour charger plus de résultats avec offset
+            total_needed = limit + offset
+            scroll_count = 0
+            last_count = 0
+            no_change_count = 0
+            max_scrolls = min(25, (total_needed // 3) + 8)
+            
+            log_info(f"Début scrolling pour charger {total_needed} résultats (offset: {offset})", debug)
+            
+            while scroll_count < max_scrolls:
+                try:
+                    # Compter les résultats actuels
+                    current_results = page.query_selector_all('[role="article"]')
+                    current_count = len(current_results)
+                    
+                    log_info(f"Scroll {scroll_count + 1}: {current_count} résultats visibles", debug)
+                    
+                    # Si on a assez de résultats, arrêter
+                    if current_count >= total_needed:
+                        log_info(f"Assez de résultats chargés: {current_count}", debug)
+                        break
+                    
+                    # Si aucun changement après plusieurs scrolls, arrêter
+                    if current_count == last_count:
+                        no_change_count += 1
+                        if no_change_count >= 3:
+                            log_info(f"Plus de résultats à charger (stable à {current_count})", debug)
+                            break
+                    else:
+                        no_change_count = 0
+                    
+                    last_count = current_count
+                    
+                    # Scroll dans la liste des résultats
+                    page.evaluate("""
+                        const scrollables = document.querySelectorAll('[role="main"], .m6QErb, [aria-label*="Résultats"]');
+                        let scrolled = false;
+                        for (const element of scrollables) {
+                            if (element && element.scrollHeight > element.clientHeight) {
+                                element.scrollTop += 800;
+                                scrolled = true;
+                                break;
+                            }
+                        }
+                        if (!scrolled) {
+                            window.scrollBy(0, 800);
+                        }
+                    """)
+                    
+                    time.sleep(random.uniform(2, 3))
+                    scroll_count += 1
+                    
+                except Exception as e:
+                    log_error(f"Erreur scroll {scroll_count}: {e}")
+                    break
+            
+            # Attendre un peu après le dernier scroll
+            time.sleep(2)
+            
+            # Extraction des résultats
+            log_info("=== DÉBUT EXTRACTION DES DONNÉES ===", debug)
+            
+            # Sélecteurs Google Maps mis à jour
+            business_selectors = [
+                '[role="article"]',  # Sélecteur principal actuel
+                'div[jsaction*="mouseover"]:has(a[aria-label])',  # Fallback
+                '.Nv2PK',  # Ancien sélecteur
+                'div[data-index]'  # Autre fallback
             ]
             
-            results = []
-            
-            for attempt, url in enumerate(search_urls):
+            businesses = []
+            for selector in business_selectors:
                 try:
-                    self.logger.debug(f"Trying URL {attempt + 1}: {url}")
-                    
-                    # Délai réaliste
-                    time.sleep(random.uniform(2, 4))
-                    
-                    response = self.session.get(url, timeout=15)
-                    
-                    if response.status_code == 200:
-                        self.logger.info(f"✅ Got HTML response ({len(response.text)} chars)")
-                        
-                        # EXTRACTION RÉELLE depuis le HTML
-                        businesses = self.extract_real_business_data(response.text, query)
-                        
-                        if businesses:
-                            results.extend(businesses)
-                            self.logger.info(f"✅ Extracted {len(businesses)} real businesses")
-                            break
-                        else:
-                            self.logger.warning("No businesses extracted from HTML")
-                            
-                    elif response.status_code == 429:
-                        self.logger.warning("Rate limited, waiting...")
-                        time.sleep(random.uniform(10, 20))
-                        continue
-                        
-                    else:
-                        self.logger.warning(f"HTTP {response.status_code} on attempt {attempt + 1}")
-                        
-                except requests.exceptions.RequestException as e:
-                    self.logger.error(f"Request failed on attempt {attempt + 1}: {e}")
-                    if attempt < len(search_urls) - 1:
-                        time.sleep(random.uniform(5, 10))
-                        continue
-                    else:
-                        self.logger.error("All request attempts failed")
+                    businesses = page.query_selector_all(selector)
+                    if businesses:
+                        log_info(f"✅ Trouvé {len(businesses)} éléments avec sélecteur: {selector}", debug)
                         break
+                except:
+                    continue
             
-            # Appliquer limit et offset
-            start_idx = offset
-            end_idx = offset + limit
-            final_results = results[start_idx:end_idx]
+            if not businesses:
+                log_error("❌ Aucun élément business trouvé ! Vérifier les sélecteurs CSS")
+                return []
             
-            self.logger.info(f"🎯 FINAL: {len(final_results)} businesses (offset: {offset}, limit: {limit})")
+            # Extraction avec gestion de l'offset
+            extracted_count = 0
+            skipped_count = 0
             
-            return final_results
+            log_info(f"Traitement de {len(businesses)} businesses (offset: {offset})", debug)
+            
+            for idx, business in enumerate(businesses):
+                # Skip les premiers résultats selon l'offset
+                if skipped_count < offset:
+                    skipped_count += 1
+                    continue
+                
+                if extracted_count >= limit:
+                    break
+                
+                try:
+                    # Récupérer tout le texte du business pour extraction téléphone
+                    business_text = business.inner_text()
+                    
+                    if debug:
+                        log_info(f"\n--- Business {idx} (après offset) ---", True)
+                        log_info(f"Texte: {business_text[:200]}...", True)
+                    
+                    # Extraction nom - méthodes multiples
+                    name = ""
+                    
+                    # Méthode 1: Via aria-label des liens
+                    try:
+                        link = business.query_selector('a[aria-label]')
+                        if link:
+                            name = link.get_attribute('aria-label') or ''
+                            if debug:
+                                log_info(f"Nom via aria-label: {name}", True)
+                    except:
+                        pass
+                    
+                    # Méthode 2: Texte du titre
+                    if not name:
+                        name_selectors = [
+                            '.fontHeadlineSmall',
+                            '.qBF1Pd',
+                            'span.OSrXXb',
+                            'h3'
+                        ]
+                        
+                        for name_sel in name_selectors:
+                            try:
+                                name_el = business.query_selector(name_sel)
+                                if name_el:
+                                    name = name_el.inner_text().strip()
+                                    if name and len(name) > 2:
+                                        if debug:
+                                            log_info(f"Nom via {name_sel}: {name}", True)
+                                        break
+                            except:
+                                continue
+                    
+                    if not name:
+                        if debug:
+                            log_info(f"Pas de nom trouvé pour business {idx}", True)
+                        continue
+                    
+                    # Vérification absence site web (critère principal)
+                    website_indicators = [
+                        'a[aria-label*="Site Web"]',
+                        'a[aria-label*="Website"]',
+                        'a[data-value*="Website"]',
+                        'a[href^="http"]:not([href*="google"]):not([href*="maps"])'
+                    ]
+                    
+                    has_website = False
+                    for indicator in website_indicators:
+                        try:
+                            if business.query_selector(indicator):
+                                has_website = True
+                                if debug:
+                                    log_info(f"Site web détecté avec: {indicator}", True)
+                                break
+                        except:
+                            continue
+                    
+                    if has_website:
+                        if debug:
+                            log_info(f"❌ Ignoré {name}: site web détecté", True)
+                        continue
+                    
+                    # Extraction adresse depuis le texte
+                    lines = business_text.split('\n')
+                    address = ""
+                    
+                    for line in lines:
+                        line = line.strip()
+                        
+                        # Détecter adresse (contient code postal ou mots clés)
+                        if (re.search(r'\d{5}', line) or 
+                            any(word in line.lower() for word in ['rue', 'avenue', 'boulevard', 'place', 'allée'])):
+                            if not address or len(line) > len(address):
+                                address = line
+                                if debug:
+                                    log_info(f"Adresse trouvée: {address}", True)
+                    
+                    # Construction données brutes avec texte complet
+                    raw_data = {
+                        'name': name,
+                        'activity': query,
+                        'business_text': business_text,  # CRITIQUE pour extraction téléphone
+                        'address': address,
+                        'index': idx,
+                        'offset': offset
+                    }
+                    
+                    # Normalisation selon schéma unifié
+                    normalized = normalize_data(raw_data, query, session_id, debug)
+                    
+                    # Validation données minimales
+                    if normalized.get('name') and (normalized.get('phone') or normalized.get('address')):
+                        results.append(normalized)
+                        extracted_count += 1
+                        if debug:
+                            phone_status = "📞" if normalized.get('phone') else "📍"
+                            log_info(f"✅ Extrait {extracted_count}/{limit}: {phone_status} {normalized['name'][:50]}", True)
+                    else:
+                        if debug:
+                            log_info(f"❌ Données insuffisantes pour {name}", True)
+                    
+                except Exception as e:
+                    log_error(f"Erreur extraction business {idx}: {e}")
+                    if debug:
+                        import traceback
+                        log_error(traceback.format_exc())
+                    continue
+            
+            log_info(f"\n=== EXTRACTION TERMINÉE ===", debug)
+            log_info(f"Résultats: {len(results)} extraits (sur {len(businesses)} trouvés, offset: {offset})", debug)
             
         except Exception as e:
-            self.logger.error(f"Google Maps search failed: {e}")
-            return []
+            log_error(f"Erreur fatale scraping Maps: {e}")
+            if debug:
+                import traceback
+                log_error(traceback.format_exc())
+        finally:
+            try:
+                browser.close()
+            except:
+                pass
+    
+    return results
 
 def main():
-    parser = argparse.ArgumentParser(description='REAL Google Maps Scraper v4.0 - Vraies données uniquement')
-    parser.add_argument('query', help='Search query (e.g., "plombier")')
-    parser.add_argument('--city', required=True, help='Code postal to search in (e.g., "44000")')
-    parser.add_argument('--limit', type=int, default=20, help='Number of results to return')
-    parser.add_argument('--offset', type=int, default=0, help='Offset for pagination')
-    parser.add_argument('--session-id', help='Session ID for tracking')
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    """Point d'entrée principal"""
+    parser = argparse.ArgumentParser(description='Google Maps Scraper v2.0 avec extraction téléphone corrigée')
+    parser.add_argument('query', help='Activité à rechercher (ex: "plombier")')
+    parser.add_argument('--city', default='', help='Ville de recherche (ex: "Nantes")')
+    parser.add_argument('--limit', type=int, default=50, help='Limite de résultats (défaut: 50)')
+    parser.add_argument('--offset', type=int, default=0, help='Nombre de résultats à ignorer (défaut: 0)')
+    parser.add_argument('--session-id', default=None, help='ID de session pour tracking')
+    parser.add_argument('--debug', action='store_true', help='Mode debug avec logs détaillés')
     
     args = parser.parse_args()
     
+    # Validation des arguments
+    if not args.query.strip():
+        log_error("Query ne peut pas être vide")
+        sys.exit(1)
+    
+    if args.limit <= 0 or args.limit > 100:
+        log_error("Limit doit être entre 1 et 100")
+        sys.exit(1)
+    
+    if args.offset < 0 or args.offset > 100:
+        log_error("Offset doit être entre 0 et 100")
+        sys.exit(1)
+    
+    # Lancement du scraping
     try:
-        scraper = RealMapsScraperV4(
-            session_id=args.session_id,
-            debug=args.debug
-        )
+        start_time = time.time()
+        results = scrape_maps(args.query, args.city, args.limit, args.offset, 
+                             getattr(args, 'session_id'), args.debug)
+        duration = time.time() - start_time
         
-        results = scraper.search_google_maps(
-            query=args.query,
-            city=args.city,
-            limit=args.limit,
-            offset=args.offset
-        )
+        # Logs de résumé
+        if args.debug:
+            log_info(f"\n=== RÉSUMÉ FINAL ===", True)
+            log_info(f"Durée totale: {duration:.2f}s", True)
+            log_info(f"Résultats obtenus: {len(results)}", True)
+            
+            if results:
+                # Stats par type de téléphone
+                mobile_count = sum(1 for r in results if r.get('mobile_detected'))
+                phone_count = sum(1 for r in results if r.get('phone'))
+                log_info(f"Téléphones: {phone_count} total, {mobile_count} mobiles", True)
+                
+                # Stats par ville
+                cities = {}
+                for r in results:
+                    city = r.get('city', 'Inconnu')
+                    cities[city] = cities.get(city, 0) + 1
+                log_info(f"Répartition villes: {dict(list(cities.items())[:5])}", True)
         
-        # Output JSON pour n8n (un objet par ligne)
+        # Output JSON Lines pour n8n
         for result in results:
             print(json.dumps(result, ensure_ascii=False))
             
-        if args.debug:
-            valid_count = len([r for r in results if r.get('geo_validated')])
-            logging.info(f"SUCCESS: {len(results)} real results ({valid_count} geo-validated)")
-            
+    except KeyboardInterrupt:
+        log_info("Arrêt demandé par utilisateur", args.debug)
+        sys.exit(0)
     except Exception as e:
-        logging.error(f"Real scraper failed: {e}")
+        log_error(f"Erreur fatale: {e}")
+        if args.debug:
+            import traceback
+            log_error(traceback.format_exc())
         sys.exit(1)
 
 if __name__ == "__main__":
