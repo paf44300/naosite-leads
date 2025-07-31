@@ -15,7 +15,7 @@ from playwright.sync_api import sync_playwright
 import logging
 
 # Configuration
-PROXY_HOST = "proxy.webshare.io"
+PROXY_HOST = "p.webshare.io"
 PROXY_PORT = "8000"
 PROXY_USER = "xftpfnvt"
 PROXY_PASS = "yulnmnbiq66j"
