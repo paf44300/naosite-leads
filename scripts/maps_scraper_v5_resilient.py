@@ -13,11 +13,12 @@ import argparse
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-# Configuration proxy Webshare
-PROXY_HOST = os.getenv("WEBSHARE_HOST", "proxy.webshare.io")
-PROXY_PORT = os.getenv("WEBSHARE_PORT", "8000")
-PROXY_USER = os.getenv("WEBSHARE_USERNAME")
-PROXY_PASS = os.getenv("WEBSHARE_PASSWORD")
+# Configuration du Proxy
+PROXY_HOST = "p.webshare.io"
+PROXY_PORT = "80"
+PROXY_USER = "xftpfnvt"
+PROXY_PASS = "yulnmnbiq66j"
+
 
 def normalize_data(raw_data):
     """Normalise les données selon le schéma unifié"""
@@ -61,7 +62,7 @@ def normalize_data(raw_data):
         "address": address,
         "city": city_match or extract_city_fallback(address),
         "website": None,  # Always null (filtering criteria)
-        "source": "google_maps",
+        "source": "Maps",
         "scraped_at": datetime.utcnow().isoformat() + "Z",
         "raw_data": raw_data  # Pour debug
     }
