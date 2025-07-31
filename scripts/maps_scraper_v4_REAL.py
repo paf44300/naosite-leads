@@ -16,7 +16,7 @@ import logging
 
 # Configuration
 PROXY_HOST = "p.webshare.io"
-PROXY_PORT = "8000"
+PROXY_PORT = "80"
 PROXY_USER = "xftpfnvt"
 PROXY_PASS = "yulnmnbiq66j"
 
