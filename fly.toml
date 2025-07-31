@@ -1,14 +1,19 @@
-app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
+
+app = "naosite-leads-mdvmcg"
 
 [build]
-  dockerfile = "Dockerfile"      # indique à Fly d’utiliser ton Dockerfile
+  dockerfile = "Dockerfile"
+
+[env]
+  # On dit juste à n8n où il est accessible publiquement. C'est tout.
+  WEBHOOK_URL = "https://naosite-leads-mdvmcg.fly.dev"
 
 [[mounts]]
   source      = "n8n_data"
   destination = "/root/.n8n"
-  
+
 [[services]]
-  internal_port = 5678           # port exposé par n8n
+  internal_port = 5678
   protocol      = "tcp"
 
   [[services.ports]]
@@ -18,6 +23,3 @@ app = "naosite-leads-mdvmcg"     # <- le nom exact de ton appli Fly
   [[services.ports]]
     handlers = ["http","tls"]
     port = 443
-    
-[env]
-  WEBHOOK_URL = "https://naosite-leads-mdvmcg.fly.dev"
