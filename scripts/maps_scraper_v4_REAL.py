@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Google Maps Scraper v4.0 REAL - FIXED VERSION
-Utilise Playwright pour l'extraction dynamique
+Google Maps Scraper v4.0 REAL - FINAL FIXED VERSION
+Utilise Playwright pour l'extraction dynamique sur le site public de Google Maps.
 """
 
 import os
@@ -12,10 +12,11 @@ import random
 import argparse
 import re
 from datetime import datetime
-from playwright.sync_api import sync_playwright
+from urllib.parse import quote_plus
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import logging
 
-# Configuration
+# Configuration du Proxy
 PROXY_HOST = "p.webshare.io"
 PROXY_PORT = "80"
 PROXY_USER = "xftpfnvt"
@@ -27,196 +28,168 @@ class RealMapsScraper:
         self.debug = debug
         self.setup_logging()
         self.VALID_DEPARTMENTS = ['44', '35', '29', '56', '85', '49', '53']
-        
+
     def setup_logging(self):
-        level = logging.DEBUG if self.debug else logging.WARNING
+        level = logging.DEBUG if self.debug else logging.INFO
         logging.basicConfig(
             level=level,
             format=f'[{self.session_id}] %(levelname)s: %(message)s',
             stream=sys.stderr
         )
         self.logger = logging.getLogger(__name__)
-    
-    def normalize_phone(self, phone):
-        """Normalise le téléphone au format français"""
-        if not phone:
+
+    def normalize_phone(self, text_block):
+        """Extrait et normalise un numéro de téléphone depuis un bloc de texte."""
+        if not text_block:
             return None
-        # This regex is more robust for finding phone numbers within a block of text
-        phone_match = re.search(r'(\+33[\s\d.-]{9,12}|0[1-9](?:[\s\d.-]{8}))', phone)
-        if not phone_match:
-            return None
-        
-        phone_digits = ''.join(filter(str.isdigit, phone_match.group(1)))
-        
-        if phone_digits.startswith('33'):
-            return '+' + phone_digits
-        if phone_digits.startswith('0'):
-            return '+33' + phone_digits[1:]
+        # Pattern pour trouver des numéros de téléphone français plus efficacement
+        phone_pattern = r'(?:\+33|0)\s*[1-9](?:[\s.-]*\d{2}){4}'
+        match = re.search(phone_pattern, text_block)
+        if match:
+            phone_digits = ''.join(filter(str.isdigit, match.group(0)))
+            if phone_digits.startswith('0'):
+                return '+33' + phone_digits[1:]
+            if phone_digits.startswith('33'):
+                return '+' + phone_digits
         return None
 
-    def extract_city_from_address(self, address):
-        """Extrait la ville de l'adresse"""
-        if not address:
-            return ""
-        
-        # This pattern looks for a postal code followed by a city name
-        match = re.search(r'\b(\d{5})\s+([A-Z][a-zÀ-ÿ\s\-\']+)', address)
-        if match:
-            return match.group(2).strip()
-        return ""
-    
     def validate_department(self, address):
-        """Valide le département depuis l'adresse"""
+        """Valide le département à partir de l'adresse."""
         if not address:
             return None
-        
         postal_match = re.search(r'\b(\d{5})\b', address)
         if postal_match:
-            postal_code = postal_match.group(1)
-            dept = postal_code[:2]
+            dept = postal_match.group(1)[:2]
             if dept in self.VALID_DEPARTMENTS:
                 return dept
         return None
-    
+
     def scrape_with_playwright(self, query, city, limit=30, offset=0):
-        """Scrape Google Maps avec Playwright"""
+        """Scrape Google Maps en utilisant l'URL publique et des sélecteurs robustes."""
         results = []
-        
+        search_query = f"{query} {city}".strip()
+        # **CHANGEMENT MAJEUR**: Utilisation de l'URL publique de Google Maps
+        maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
+
         with sync_playwright() as p:
             browser_args = [
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-features=site-per-process'
+                '--disable-blink-features=AutomationControlled'
             ]
-            
-            launch_options = {
-                'headless': True,
-                'args': browser_args
-            }
-            
+            launch_options = {'headless': True, 'args': browser_args}
             if PROXY_USER and PROXY_PASS:
                 launch_options['proxy'] = {
                     'server': f'http://{PROXY_HOST}:{PROXY_PORT}',
                     'username': PROXY_USER,
                     'password': PROXY_PASS
                 }
-            
+
             browser = p.chromium.launch(**launch_options)
-            
             context = browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 locale='fr-FR',
-                geolocation={'latitude': 48.3904, 'longitude': -4.4861}, # Coords for Brest (29)
-                permissions=['geolocation']
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
-            
-            context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-            
             page = context.new_page()
-            
+
             try:
-                search_query = f"{query} {city}".strip()
-                # Using the public Google Maps URL
-                maps_url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
-                
-                self.logger.info(f"Loading: {maps_url}")
-                
-                page.goto(maps_url, wait_until='domcontentloaded', timeout=60000)
-                
-                # Handle Google's consent form
+                self.logger.info(f"Navigating to public URL: {maps_url}")
+                page.goto(maps_url, wait_until='networkidle', timeout=60000)
+
+                # Gérer le formulaire de consentement de Google
                 try:
-                    consent_button = page.query_selector('//button[.//div[contains(text(), "Tout accepter")]]')
-                    if consent_button:
-                        self.logger.info("Consent button found, clicking it.")
+                    consent_button = page.locator('button:has-text("Tout accepter")').first
+                    if consent_button.is_visible():
+                        self.logger.info("Consent form found. Clicking 'Accept all'.")
                         consent_button.click()
                         page.wait_for_load_state('networkidle', timeout=10000)
-                except Exception as e:
-                    self.logger.warning(f"Could not handle consent form: {e}")
-
-                # Wait for the main results feed to appear
-                try:
-                    page.wait_for_selector('div[role="feed"]', timeout=20000)
+                except PlaywrightTimeoutError:
+                    self.logger.info("Consent form did not require interaction or timed out.")
                 except Exception:
-                    self.logger.error("Results feed not found. Page might not have loaded correctly or no results were found.")
-                    browser.close()
-                    return []
-                
-                # Scroll to load more results
-                for _ in range(5):
-                    page.evaluate('document.querySelector("div[role=\\"feed\\"]")?.scrollBy(0, 5000)')
+                    self.logger.info("No consent form found, continuing.")
+
+                # Attendre que le conteneur des résultats soit visible
+                results_feed_selector = 'div[role="feed"]'
+                page.wait_for_selector(results_feed_selector, state='visible', timeout=20000)
+                self.logger.info("Results feed is visible. Starting scroll.")
+
+                # Scroll pour charger tous les résultats
+                for i in range(5):
+                    page.locator(results_feed_selector).evaluate("node => node.scrollTop = node.scrollHeight")
                     time.sleep(random.uniform(1.5, 2.5))
-                
-                businesses = page.query_selector_all('div[role="article"]')
-                self.logger.info(f"Found {len(businesses)} potential businesses.")
+                    self.logger.debug(f"Scroll {i+1}/5 complete.")
 
-                for business in businesses[offset:offset+limit]:
+                # Sélecteur robuste pour les fiches d'entreprise
+                business_cards = page.locator(f'{results_feed_selector} > div[role="article"]').all()
+                self.logger.info(f"Found {len(business_cards)} business cards.")
+
+                for card in business_cards[offset:offset+limit]:
                     try:
-                        full_text = business.inner_text()
+                        card_text = card.inner_text()
                         
-                        name_element = business.query_selector('.fontHeadlineSmall, .qBF1Pd')
-                        if not name_element:
+                        # Filtre crucial : ignorer les entreprises avec un site web
+                        if "site web" in card_text.lower():
+                            self.logger.debug(f"Skipping card, contains 'Site Web': {card_text[:100]}")
                             continue
-                        name = name_element.inner_text().strip()
 
-                        if "Site Web" in full_text:
-                            self.logger.debug(f"Skipping '{name}' - has website link.")
-                            continue
-                        
                         address = None
-                        addr_elements = business.query_selector_all('div.W4Efsd:not(:first-child) > span:nth-child(2)')
-                        for elem in addr_elements:
-                            text = elem.inner_text()
-                            if re.search(r'\d{5}', text):
-                                address = text
-                                break
+                        # Pattern pour trouver une adresse complète avec code postal
+                        address_match = re.search(r'([\d\w\s,.-]+? \d{5} [\w\s.-]+)', card_text)
+                        if address_match:
+                            address = address_match.group(1).strip()
                         
-                        dept = self.validate_department(address) if address else None
-                        if not dept:
-                            self.logger.debug(f"Skipping '{name}' - department not in {self.VALID_DEPARTMENTS} or address not found.")
+                        # Validation par département
+                        department = self.validate_department(address)
+                        if not department:
+                            self.logger.debug(f"Skipping card, department not in valid list or address not found in: {card_text[:100]}")
+                            continue
+                        
+                        name = card.locator('a[aria-label]').first.get_attribute('aria-label')
+                        phone = self.normalize_phone(card_text)
+
+                        if not name:
                             continue
 
-                        phone = self.normalize_phone(full_text)
-                        
                         result = {
-                            'name': name,
+                            'name': name.strip(),
                             'phone': phone,
                             'address': address,
-                            'city': self.extract_city_from_address(address),
-                            'department': dept,
+                            'city': city,
+                            'department': department,
                             'activity': query.title(),
-                            'source': 'Maps',
+                            'source': 'Maps_public',
                             'website': None,
                             'email': None,
-                            'extracted_from': 'real_html_v2',
+                            'extracted_from': 'real_html_v3_public',
                             'geo_validated': True,
                             'scraped_at': datetime.now().isoformat(),
                             'session_id': self.session_id
                         }
                         results.append(result)
                         self.logger.info(f"✅ Extracted: {name}")
-                        
+
                     except Exception as e:
-                        self.logger.debug(f"Error extracting a single business: {e}")
-                
+                        self.logger.warning(f"Could not process a business card. Error: {e}")
+
+            except PlaywrightTimeoutError as e:
+                self.logger.error(f"Timeout Error during page navigation or waiting for selector: {e}")
             except Exception as e:
-                self.logger.error(f"A general Playwright error occurred: {e}")
-                page.screenshot(path='error_screenshot.png')
-                self.logger.info("An error screenshot has been saved to 'error_screenshot.png'")
+                self.logger.error(f"A critical error occurred in Playwright: {e}")
             finally:
+                page.screenshot(path='final_state.png')
+                self.logger.info("Screenshot of final state saved to 'final_state.png'.")
                 browser.close()
-        
+
         return results
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Google Maps Scraper v4.0 - FINAL")
     parser.add_argument("query", help="Profession/activité à rechercher")
     parser.add_argument("--city", required=True, help="Code postal ou ville")
     parser.add_argument("--limit", type=int, default=30)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--session-id", help="Session ID")
-    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     
     args = parser.parse_args()
     
@@ -235,8 +208,10 @@ def main():
     for result in results:
         print(json.dumps(result, ensure_ascii=False))
     
-    if args.debug:
-        logging.info(f"SUCCESS: {len(results)} results extracted")
+    if len(results) > 0:
+        logging.info(f"SUCCESS: {len(results)} results extracted.")
+    else:
+        logging.warning("PROCESS FINISHED: 0 results were extracted.")
 
 if __name__ == "__main__":
     main()
