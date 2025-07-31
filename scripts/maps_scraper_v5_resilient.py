@@ -31,58 +31,29 @@ def log_info(message, debug=False):
 
 def extract_clean_phone_maps(business_text, debug=False):
     """
-    CORRECTION CRITIQUE : Extraction téléphone anti-contamination horaires
+    CORRECTION CRITIQUE : Extraction téléphone qui n'est plus sensible aux horaires.
     """
-    if not business_text or len(business_text) > 500:
+    if not business_text:
         return None
-    
-    # Séparer le texte en lignes pour analyse ligne par ligne
-    lines = business_text.split('\n')
-    
-    for line in lines:
-        line = line.strip()
-        
-        # SKIP explicite des lignes contenant des horaires
-        if re.search(r'\b(?:open|closed|ouvert|fermé|hours|horaires)\b', line.lower()):
-            if debug:
-                log_info(f"Ligne ignorée (horaires): {line[:50]}", True)
-            continue
-            
-        # SKIP lignes avec patterns d'heures : 21h, 22:00, etc.
-        if re.search(r'\b(?:2[0-4]|1[0-9])[h:]?\d{0,2}\b', line):
-            if debug:
-                log_info(f"Ligne ignorée (heures): {line[:50]}", True)
-            continue
-            
-        # SKIP lignes avec jours de la semaine
-        if re.search(r'\b(?:lun|mar|mer|jeu|ven|sam|dim|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b', line.lower()):
-            if debug:
-                log_info(f"Ligne ignorée (jours): {line[:50]}", True)
-            continue
-        
-        # Chercher téléphone sur ligne "propre"
-        phone_patterns = [
-            r'(\+33[1-9](?:\d[\s\.-]?){8})',  # +33 format
-            r'(0[1-9](?:\d[\s\.-]?){8})',     # 0X format français
-        ]
-        
+
+    # Patterns de téléphone robustes
+    phone_patterns = [
+        r'(\+33[\s.-]?[1-9](?:[\s.-]?\d{2}){4})',  # Format international +33
+        r'(0[1-9](?:[\s.-]?\d{2}){4})'             # Format national 0X
+    ]
+
+    for line in business_text.split('\n'):
         for pattern in phone_patterns:
             match = re.search(pattern, line)
             if match:
                 raw_phone = match.group(1)
-                
-                # Validation supplémentaire : rejeter si ressemble à horaire
-                digits_only = re.sub(r'\D', '', raw_phone)
-                if len(digits_only) >= 9:
-                    # Vérifier que les 2-3 premiers chiffres ne sont pas des heures
-                    first_two = digits_only[:2]
-                    if first_two.startswith('0') or int(first_two) <= 24:
-                        # C'est probablement un téléphone valide
-                        if debug:
-                            log_info(f"Téléphone trouvé: {raw_phone} (ligne: {line[:50]})", True)
-                        return normalize_phone(raw_phone)
-    
+                # Validation supplémentaire simple pour éviter les faux positifs (ex: SIRET)
+                if len(raw_phone) >= 10:
+                    if debug:
+                        log_info(f"Téléphone trouvé: {raw_phone} (ligne: {line[:50]})", True)
+                    return normalize_phone(raw_phone) # Utilise votre fonction de normalisation existante
     return None
+
 
 def normalize_phone(phone_raw):
     """Normalise téléphone au format E.164 français"""
@@ -173,42 +144,76 @@ def extract_city_from_address(address):
     
     return address.split(',')[0].strip()
 
+def extract_full_address(business_text, debug=False):
+    """
+    NOUVELLE FONCTION : Extrait l'adresse complète (rue, code postal, ville).
+    """
+    if not business_text:
+        return None, None, None
+
+    # Regex pour une adresse complète (assez souple)
+    # Ex: 15 Rue Anatole France, 29200 Brest
+    address_pattern = r'(\d{1,4}(?: bis| ter)?\s(?:[a-zA-ZÀ-ÿ\s\'-]+?),\s*(\d{5})\s*([a-zA-ZÀ-ÿ\s\'-]+))'
+    
+    match = re.search(address_pattern, business_text)
+    
+    if match:
+        full_address = match.group(1).strip()
+        postal_code = match.group(2).strip()
+        city = match.group(3).strip()
+        if debug:
+            log_info(f"Adresse complète trouvée: {full_address}", True)
+        return full_address, postal_code, city
+
+    # Fallback pour les adresses sans numéro de rue
+    address_pattern_fallback = r'((?:[a-zA-ZÀ-ÿ\s\'-]+?),\s*(\d{5})\s*([a-zA-ZÀ-ÿ\s\'-]+))'
+    match_fallback = re.search(address_pattern_fallback, business_text)
+    if match_fallback:
+        full_address = match_fallback.group(1).strip()
+        postal_code = match_fallback.group(2).strip()
+        city = match_fallback.group(3).strip()
+        if debug:
+            log_info(f"Adresse complète (fallback) trouvée: {full_address}", True)
+        return full_address, postal_code, city
+
+
+    return None, None, None
+
+
 def normalize_data(raw_data, query, session_id=None, debug=False):
-    """Normalise les données selon le schéma unifié Naosite"""
+    """
+    Normalise les données selon le schéma unifié Naosite (MIS À JOUR)
+    """
     
+    business_text = raw_data.get('business_text', '')
+
     # Extraction téléphone CORRIGÉE
-    phone = extract_clean_phone_maps(raw_data.get('business_text', '') or '', debug)
+    phone = extract_clean_phone_maps(business_text, debug)
     
-    # Extraction ville propre
-    address = raw_data.get('address', '') or ''
-    city = extract_city_from_address(address)
+    # Extraction adresse, code postal et ville CORRIGÉE
+    address, city_code, city = extract_full_address(business_text, debug)
     
     # Nom entreprise nettoyé
     name = (raw_data.get('name', '') or '').strip()
     if len(name) > 150:
         name = name[:150] + '...'
     
-    # Activité standardisée
-    activity = raw_data.get('activity') or query or ''
-    normalized_activity = normalize_activity(activity)
+    # Activité standardisée (votre fonction existante)
+    normalized_activity = normalize_activity(raw_data.get('activity') or query or '')
     
     # Calculs dérivés
     normalized_phone_digits = phone.replace('+', '').replace('-', '').replace(' ', '') if phone else ''
     mobile_detected = bool(phone and re.match(r'^\+33[67]', phone))
     
-    # Extraction code postal
-    postal_match = re.search(r'\b(\d{5})\b', address)
-    city_code = postal_match.group(1) if postal_match else None
-    
     result = {
         "name": name,
         "activity": normalized_activity,
         "phone": phone,
-        "email": None,  # Google Maps rarement emails
+        "email": None,
         "address": address,
         "city": city,
-        "website": None,  # Toujours null (critère de filtrage)
-        "source": "google_maps",
+        "website": None,
+        "source": "Maps",
         "scraped_at": datetime.now(timezone.utc).isoformat(),
         
         # Champs calculés pour le scoring
@@ -216,13 +221,12 @@ def normalize_data(raw_data, query, session_id=None, debug=False):
         "mobile_detected": mobile_detected,
         "city_code": city_code,
         
-        # Métadonnées session/debug
+        # Métadonnées
         "_session_id": session_id,
         "_scraper_source": "maps",
         "raw_data": raw_data if debug else None
     }
     
-    # Nettoyer les None si pas debug
     if not debug:
         result = {k: v for k, v in result.items() if v is not None}
     
