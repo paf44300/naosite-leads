@@ -382,158 +382,160 @@ class SeleniumPJScraper:
         self.logger.info(f"Total collected: {len(all_results)} results across {page-1} pages")
         return all_results[:total_limit]
     
-    def generate_fallback_data(self, query: str, city: str, limit: int) -> List[Dict]:
-    
-    # ✅ CORRECTION 1: Extraire le département des 2 premiers chiffres
-    requested_postal_code = city  # Le city est en fait le code postal
-    department = requested_postal_code[:2] if len(requested_postal_code) >= 2 else '44'
-    
-    # ✅ CORRECTION 2: Codes postaux étendus par département (plus de variété)
-    codes_postaux_par_dept = {
-        '44': [  # Loire-Atlantique - Large échantillon
-            '44000','44100','44200','44300','44400','44600','44700','44800','44120','44470',
-            '44230','44240','44260','44280','44320','44330','44340','44350','44360','44370',
-            '44380','44390','44410','44420','44430','44440','44450','44460','44490','44500',
-            '44510','44520','44530','44540','44550','44560','44570','44580','44590','44630',
-            '44640','44650','44660','44670','44680','44690','44710','44720','44730','44740'
-        ],
-        '35': [  # Ille-et-Vilaine
-            '35000','35200','35700','35400','35300','35500','35510','35650','35131','35136',
-            '35170','35520','35590','35740','35830','35850','35890','35120','35160','35190',
-            '35210','35220','35230','35250','35270','35290','35310','35320','35360','35370'
-        ],
-        '29': [  # Finistère
-            '29000','29200','29600','29100','29120','29140','29150','29160','29170','29190',
-            '29210','29220','29230','29240','29250','29260','29270','29280','29290','29300',
-            '29310','29340','29350','29360','29370','29380','29400','29410','29420','29430'
-        ],
-        '56': [  # Morbihan
-            '56000','56100','56300','56120','56130','56140','56150','56160','56170','56190',
-            '56200','56220','56230','56240','56250','56260','56270','56280','56290','56310',
-            '56320','56330','56350','56360','56370','56380','56400','56410','56420','56430'
-        ],  
-        '85': [  # Vendée
-            '85000','85100','85200','85230','85270','85280','85300','85310','85320','85330',
-            '85340','85350','85360','85370','85400','85410','85420','85430','85440','85450',
-            '85460','85470','85480','85490','85500','85510','85520','85540','85560','85570'
-        ],
-        '49': [  # Maine-et-Loire
-            '49000','49100','49300','49400','49070','49080','49124','49130','49140','49150',
-            '49160','49170','49180','49190','49200','49220','49230','49240','49250','49260',
-            '49270','49280','49290','49310','49320','49330','49340','49350','49360','49370'
-        ],
-        '53': [  # Mayenne
-            '53000','53100','53200','53110','53120','53140','53150','53160','53170','53190',
-            '53220','53230','53240','53250','53260','53270','53290','53300','53340','53370',
-            '53380','53390','53400','53410','53440','53450','53470','53480','53500','53510'
-        ]
-    }
-    
-    # ✅ CORRECTION 3: Utiliser TOUT le département (pas de privilège pour le code exact)
-    preferred_codes = codes_postaux_par_dept.get(department, codes_postaux_par_dept['44'])
-    
-    # ✅ CORRECTION 3: Noms d'entreprises COMPLÈTEMENT ALÉATOIRES
-    noms_entreprises_generiques = [
-        'Atlantic Services', 'Océan Bleu', 'Loire Entreprise', 'Bretagne Pro', 'Armor Solutions',
-        'Nantaise Société', 'Rennes Express', 'Brest Marine', 'Vannes Expert', 'Angers Plus',
-        'Laval Moderne', 'Sables Services', 'Quimper Qualité', 'Lorient Rapide', 'Cholet Pro',
-        'Vitré Excellence', 'Fougères Service', 'Concarneau Expert', 'Auray Solutions', 'Ernée Plus',
-        'Mayenne Artisan', 'Châteaubriant Pro', 'Pontchâteau Express', 'Guérande Prestige',
-        'Carquefou Services', 'Bouguenais Expert', 'Vertou Moderne', 'Rezé Solutions',
-        'Alpha Entreprise', 'Beta Services', 'Gamma Solutions', 'Delta Expert', 'Epsilon Pro',
-        'Omega Plus', 'Sigma Services', 'Lambda Solutions', 'Kappa Expert', 'Theta Pro',
-        'Phoenix Entreprise', 'Horizon Services', 'Zenith Solutions', 'Apex Expert', 'Summit Pro',
-        'Nova Plus', 'Stellar Services', 'Cosmic Solutions', 'Orbital Expert', 'Galaxy Pro',
-        'Fusion Entreprise', 'Matrix Services', 'Nexus Solutions', 'Vertex Expert', 'Pivot Pro',
-        'Dynamic Plus', 'Kinetic Services', 'Velocity Solutions', 'Momentum Expert', 'Force Pro',
-        'Crystal Entreprise', 'Diamond Services', 'Platinum Solutions', 'Gold Expert', 'Silver Pro',
-        'Titan Plus', 'Atlas Services', 'Hercules Solutions', 'Apollo Expert', 'Zeus Pro'
-    ]
-    
-    def generate_company_name():
-        return random.choice(noms_entreprises_generiques)
-    
-    # ✅ CORRECTION 4: Noms de villes génériques français (aucune vérification)
-    villes_generiques = [
-        'Bourg-en-Bresse', 'Saint-Martin', 'Saint-Pierre', 'Sainte-Marie', 'Notre-Dame',
-        'Villeneuve', 'Montpellier', 'Villefranche', 'Bourg', 'Le Mans', 'Tours',
-        'Orléans', 'Bourges', 'Blois', 'Chartres', 'Châteauroux', 'Dreux',
-        'Vendôme', 'Romorantin', 'Montargis', 'Pithiviers', 'Nogent'
-    ]
-    
-    # Domaines email français
-    domaines_standards = ['gmail.com', 'orange.fr', 'free.fr', 'wanadoo.fr', 'laposte.net']
-    
-    results = []
-    noms_utilises = set()
-    
-    for i in range(limit):
-        # ✅ Code postal : N'IMPORTE LEQUEL du bon département
-        code_postal = random.choice(preferred_codes)
+   def generate_fallback_data(self, query: str, city: str, limit: int) -> List[Dict]:
+        """
+        Données de fallback réalistes QUI RESPECTENT les paramètres query et city
+        """
         
-        # ✅ Ville : COMPLÈTEMENT ALÉATOIRE (aucune vérification)
-        ville = random.choice(villes_generiques)
+        # ✅ CORRECTION 1: Extraire le département des 2 premiers chiffres
+        requested_postal_code = city  # Le city est en fait le code postal
+        department = requested_postal_code[:2] if len(requested_postal_code) >= 2 else '44'
         
-        # ✅ Nom d'entreprise varié et réaliste
-        name = generate_company_name()
-        
-        # Éviter les doublons exacts (mais accepter des variantes)
-        counter = 1
-        original_name = name
-        while name in noms_utilises and counter < 5:
-            name = f"{original_name} {counter}"
-            counter += 1
-        noms_utilises.add(name)
-        
-        # ✅ Adresse : Numéro + Code postal du bon département + Ville générique
-        numero = random.randint(1, 999)
-        adresse = f"{numero} {code_postal} {ville}"
-        
-        # Email (80% de chance)
-        email = None
-        if random.random() < 0.8:
-            name_clean = re.sub(r'[^a-zA-Z ]', '', name.lower()).split()
-            if len(name_clean) >= 2:
-                email_prefix = f"{name_clean[0]}.{name_clean[1]}"[:15]
-            else:
-                email_prefix = name_clean[0][:10] if name_clean else 'contact'
-            domain = random.choice(domaines_standards)
-            email = f"{email_prefix}@{domain}"
-        
-        # Téléphone français
-        prefixes_francais = ['02', '06', '07', '09']
-        phone_num = f"{random.choice(prefixes_francais)}{random.randint(10000000, 99999999)}"
-        phone = f"{phone_num[:2]} {phone_num[2:4]} {phone_num[4:6]} {phone_num[6:8]} {phone_num[8:10]}"
-        
-        # Website (30% de chance, sera filtré plus tard)
-        website = None
-        if random.random() < 0.3:
-            domain_name = re.sub(r'[^a-z]', '', name.lower().replace(' ', '-'))[:18]
-            website = f"http://www.{domain_name}.fr"
-        
-        result = {
-            'name': name,
-            'address': adresse,
-            'phone': phone,
-            'email': email,
-            'website': website,
-            'activity': query.title(),  # ✅ Activité = profession demandée
-            'source': f'pages_jaunes_fallback_{department}',
-            'city': ville,
-            'department': department,
-            'postal_code': code_postal,
-            'scraped_at': datetime.now().isoformat(),
-            'session_id': self.session_id,
-            'has_email': bool(email),
-            'extracted_from': 'fallback_data',  # ✅ Marquer comme fallback
-            'fallback_reason': 'Pages Jaunes extraction failed'
+        # ✅ CORRECTION 2: Codes postaux étendus par département (plus de variété)
+        codes_postaux_par_dept = {
+            '44': [  # Loire-Atlantique - Large échantillon
+                '44000','44100','44200','44300','44400','44600','44700','44800','44120','44470',
+                '44230','44240','44260','44280','44320','44330','44340','44350','44360','44370',
+                '44380','44390','44410','44420','44430','44440','44450','44460','44490','44500',
+                '44510','44520','44530','44540','44550','44560','44570','44580','44590','44630',
+                '44640','44650','44660','44670','44680','44690','44710','44720','44730','44740'
+            ],
+            '35': [  # Ille-et-Vilaine
+                '35000','35200','35700','35400','35300','35500','35510','35650','35131','35136',
+                '35170','35520','35590','35740','35830','35850','35890','35120','35160','35190',
+                '35210','35220','35230','35250','35270','35290','35310','35320','35360','35370'
+            ],
+            '29': [  # Finistère
+                '29000','29200','29600','29100','29120','29140','29150','29160','29170','29190',
+                '29210','29220','29230','29240','29250','29260','29270','29280','29290','29300',
+                '29310','29340','29350','29360','29370','29380','29400','29410','29420','29430'
+            ],
+            '56': [  # Morbihan
+                '56000','56100','56300','56120','56130','56140','56150','56160','56170','56190',
+                '56200','56220','56230','56240','56250','56260','56270','56280','56290','56310',
+                '56320','56330','56350','56360','56370','56380','56400','56410','56420','56430'
+            ],  
+            '85': [  # Vendée
+                '85000','85100','85200','85230','85270','85280','85300','85310','85320','85330',
+                '85340','85350','85360','85370','85400','85410','85420','85430','85440','85450',
+                '85460','85470','85480','85490','85500','85510','85520','85540','85560','85570'
+            ],
+            '49': [  # Maine-et-Loire
+                '49000','49100','49300','49400','49070','49080','49124','49130','49140','49150',
+                '49160','49170','49180','49190','49200','49220','49230','49240','49250','49260',
+                '49270','49280','49290','49310','49320','49330','49340','49350','49360','49370'
+            ],
+            '53': [  # Mayenne
+                '53000','53100','53200','53110','53120','53140','53150','53160','53170','53190',
+                '53220','53230','53240','53250','53260','53270','53290','53300','53340','53370',
+                '53380','53390','53400','53410','53440','53450','53470','53480','53500','53510'
+            ]
         }
         
-        results.append(result)
-    
-    self.logger.info(f"Generated {limit} fallback results for '{query}' in department '{department}' (requested: '{city}')")
-    return results
-
+        # ✅ CORRECTION 3: Utiliser TOUT le département (pas de privilège pour le code exact)
+        preferred_codes = codes_postaux_par_dept.get(department, codes_postaux_par_dept['44'])
+        
+        # ✅ CORRECTION 4: Noms d'entreprises COMPLÈTEMENT ALÉATOIRES
+        noms_entreprises_generiques = [
+            'Atlantic Services', 'Océan Bleu', 'Loire Entreprise', 'Bretagne Pro', 'Armor Solutions',
+            'Nantaise Société', 'Rennes Express', 'Brest Marine', 'Vannes Expert', 'Angers Plus',
+            'Laval Moderne', 'Sables Services', 'Quimper Qualité', 'Lorient Rapide', 'Cholet Pro',
+            'Vitré Excellence', 'Fougères Service', 'Concarneau Expert', 'Auray Solutions', 'Ernée Plus',
+            'Mayenne Artisan', 'Châteaubriant Pro', 'Pontchâteau Express', 'Guérande Prestige',
+            'Carquefou Services', 'Bouguenais Expert', 'Vertou Moderne', 'Rezé Solutions',
+            'Alpha Entreprise', 'Beta Services', 'Gamma Solutions', 'Delta Expert', 'Epsilon Pro',
+            'Omega Plus', 'Sigma Services', 'Lambda Solutions', 'Kappa Expert', 'Theta Pro',
+            'Phoenix Entreprise', 'Horizon Services', 'Zenith Solutions', 'Apex Expert', 'Summit Pro',
+            'Nova Plus', 'Stellar Services', 'Cosmic Solutions', 'Orbital Expert', 'Galaxy Pro',
+            'Fusion Entreprise', 'Matrix Services', 'Nexus Solutions', 'Vertex Expert', 'Pivot Pro',
+            'Dynamic Plus', 'Kinetic Services', 'Velocity Solutions', 'Momentum Expert', 'Force Pro',
+            'Crystal Entreprise', 'Diamond Services', 'Platinum Solutions', 'Gold Expert', 'Silver Pro',
+            'Titan Plus', 'Atlas Services', 'Hercules Solutions', 'Apollo Expert', 'Zeus Pro'
+        ]
+        
+        def generate_company_name():
+            return random.choice(noms_entreprises_generiques)
+        
+        # ✅ CORRECTION 5: Noms de villes génériques français (aucune vérification)
+        villes_generiques = [
+            'Bourg-en-Bresse', 'Saint-Martin', 'Saint-Pierre', 'Sainte-Marie', 'Notre-Dame',
+            'Villeneuve', 'Montpellier', 'Villefranche', 'Bourg', 'Le Mans', 'Tours',
+            'Orléans', 'Bourges', 'Blois', 'Chartres', 'Châteauroux', 'Dreux',
+            'Vendôme', 'Romorantin', 'Montargis', 'Pithiviers', 'Nogent'
+        ]
+        
+        # Domaines email français
+        domaines_standards = ['gmail.com', 'orange.fr', 'free.fr', 'wanadoo.fr', 'laposte.net']
+        
+        results = []
+        noms_utilises = set()
+        
+        for i in range(limit):
+            # ✅ Code postal : N'IMPORTE LEQUEL du bon département
+            code_postal = random.choice(preferred_codes)
+            
+            # ✅ Ville : COMPLÈTEMENT ALÉATOIRE (aucune vérification)
+            ville = random.choice(villes_generiques)
+            
+            # ✅ Nom d'entreprise varié et réaliste
+            name = generate_company_name()
+            
+            # Éviter les doublons exacts (mais accepter des variantes)
+            counter = 1
+            original_name = name
+            while name in noms_utilises and counter < 5:
+                name = f"{original_name} {counter}"
+                counter += 1
+            noms_utilises.add(name)
+            
+            # ✅ Adresse : Numéro + Code postal du bon département + Ville générique
+            numero = random.randint(1, 999)
+            adresse = f"{numero} {code_postal} {ville}"
+            
+            # Email (80% de chance)
+            email = None
+            if random.random() < 0.8:
+                name_clean = re.sub(r'[^a-zA-Z ]', '', name.lower()).split()
+                if len(name_clean) >= 2:
+                    email_prefix = f"{name_clean[0]}.{name_clean[1]}"[:15]
+                else:
+                    email_prefix = name_clean[0][:10] if name_clean else 'contact'
+                domain = random.choice(domaines_standards)
+                email = f"{email_prefix}@{domain}"
+            
+            # Téléphone français
+            prefixes_francais = ['02', '06', '07', '09']
+            phone_num = f"{random.choice(prefixes_francais)}{random.randint(10000000, 99999999)}"
+            phone = f"{phone_num[:2]} {phone_num[2:4]} {phone_num[4:6]} {phone_num[6:8]} {phone_num[8:10]}"
+            
+            # Website (30% de chance, sera filtré plus tard)
+            website = None
+            if random.random() < 0.3:
+                domain_name = re.sub(r'[^a-z]', '', name.lower().replace(' ', '-'))[:18]
+                website = f"http://www.{domain_name}.fr"
+            
+            result = {
+                'name': name,
+                'address': adresse,
+                'phone': phone,
+                'email': email,
+                'website': website,
+                'activity': query.title(),  # ✅ Activité = profession demandée
+                'source': f'pages_jaunes_fallback_{department}',
+                'city': ville,
+                'department': department,
+                'postal_code': code_postal,
+                'scraped_at': datetime.now().isoformat(),
+                'session_id': self.session_id,
+                'has_email': bool(email),
+                'extracted_from': 'fallback_data',  # ✅ Marquer comme fallback
+                'fallback_reason': 'Pages Jaunes extraction failed'
+            }
+            
+            results.append(result)
+        
+        self.logger.info(f"Generated {limit} fallback results for '{query}' in department '{department}' (requested: '{city}')")
+        return results
 def main():
     parser = argparse.ArgumentParser(description='Enhanced Pages Jaunes Selenium Scraper - Compatible with n8n')
     parser.add_argument('query', help='Search query (e.g., "plombier")')
