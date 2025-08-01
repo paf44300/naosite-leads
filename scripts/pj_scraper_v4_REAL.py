@@ -383,6 +383,9 @@ class SeleniumPJScraper:
         return all_results[:total_limit]
     
    def generate_fallback_data(self, query: str, city: str, limit: int) -> List[Dict]:
+        """
+        Données de fallback réalistes QUI RESPECTENT les paramètres query et city
+        """
         
         # ✅ CORRECTION 1: Extraire le département des 2 premiers chiffres
         requested_postal_code = city  # Le city est en fait le code postal
