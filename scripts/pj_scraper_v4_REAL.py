@@ -382,10 +382,8 @@ class SeleniumPJScraper:
         self.logger.info(f"Total collected: {len(all_results)} results across {page-1} pages")
         return all_results[:total_limit]
     
-   def generate_fallback_data(self, query: str, city: str, limit: int) -> List[Dict]:
-
-
-
+    
+    def generate_fallback_data(self, query: str, city: str, limit: int) -> List[Dict]:
        
         # ✅ CORRECTION 1: Extraire le département des 2 premiers chiffres
         requested_postal_code = city  # Le city est en fait le code postal
