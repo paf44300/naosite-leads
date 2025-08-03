@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Website Finder pour Naosite - Version batch mode pour n8n
-Traite plusieurs entreprises en lot depuis stdin JSON
+Google Maps Scraper pour Naosite - Version ultra-robuste
+Détecte les entreprises avec/sans site web via Google Maps
+Optimisé pour containers Docker et proxy Webshare
 """
 
 import json
@@ -10,52 +11,45 @@ import argparse
 import sys
 import logging
 import re
-from typing import Optional, Dict, List
+from typing import List, Dict, Optional
 import random
 from datetime import datetime
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus
+import subprocess
+import os
 
 try:
     import undetected_chromedriver as uc
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
-    from selenium.common.exceptions import TimeoutException, NoSuchElementException
-    from selenium.webdriver.chrome.service import Service
+    from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+    from selenium.webdriver.chrome.options import Options
     SELENIUM_AVAILABLE = True
 except ImportError:
     SELENIUM_AVAILABLE = False
 
-class WebsiteFinderBatch:
-    def __init__(self, session_id: str = None, debug: bool = False, use_proxy: bool = True, test_mode: bool = False):
+class GoogleMapsScraper:
+    def __init__(self, session_id: str = None, debug: bool = False, headless: bool = True):
         if not SELENIUM_AVAILABLE:
             raise ImportError("Please install: pip install undetected-chromedriver selenium")
             
-        self.session_id = session_id or f"batch_{int(time.time())}"
+        self.session_id = session_id or f"maps_{int(time.time())}"
         self.debug = debug
-        self.use_proxy = use_proxy
-        self.test_mode = test_mode
+        self.headless = headless
         self.setup_logging()
         
-        # Configuration proxy Webshare
-        self.proxy_host = ".webshare.io"
-        self.proxy_port = "1080" 
+        # Configuration proxy Webshare rotatif
+        self.proxy_endpoints = "p.webshare.io:80"
         self.proxy_user = "xftpfnvt-rotate"
         self.proxy_pass = "yulnmnbiq66j"
         
         self.driver = None
-        
-        # Statistiques
-        self.stats = {
-            'total_companies': 0,
-            'processed': 0,
-            'with_website': 0,
-            'with_phone': 0,
-            'errors': 0
-        }
+        self.driver_failures = 0
+        self.max_failures = 3
         
     def setup_logging(self):
-        level = logging.DEBUG if self.debug else logging.INFO
+        level = logging.DEBUG if self.debug else logging.WARNING
         logging.basicConfig(
             level=level,
             format=f'[{self.session_id}] %(levelname)s: %(message)s',
@@ -63,357 +57,393 @@ class WebsiteFinderBatch:
         )
         self.logger = logging.getLogger(__name__)
     
+    def check_chrome_available(self):
+        """Vérifier que Chrome fonctionne"""
+        chrome_paths = [
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/google-chrome',
+            '/usr/bin/chromium-browser'
+        ]
+        
+        for path in chrome_paths:
+            if os.path.exists(path):
+                try:
+                    result = subprocess.run([path, '--version'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        self.logger.info(f"✅ Chrome found: {result.stdout.strip()}")
+                        return path
+                except Exception as e:
+                    self.logger.debug(f"Chrome test failed: {e}")
+                    continue
+        
+        self.logger.error("❌ No working Chrome found!")
+        return None
+    
+    def get_random_proxy(self):
+        """Obtenir un proxy aléatoire de la liste"""
+        endpoint = random.choice(self.proxy_endpoints)
+        return f"http://{self.proxy_user}:{self.proxy_pass}@{endpoint}"
+    
     def setup_driver(self):
+        """Configure Chrome avec toutes les optimisations"""
         try:
-            self.logger.info("🚀 Initializing robust Chrome for batch processing...")
+            self.logger.info("🚀 Setting up Chrome driver...")
+            
+            # Vérifier Chrome
+            chrome_binary = self.check_chrome_available()
+            if not chrome_binary:
+                raise Exception("Chrome not available")
+            
+            # Nettoyer processus Chrome existants
+            try:
+                subprocess.run(['pkill', '-f', 'chrome'], capture_output=True, timeout=3)
+                time.sleep(1)
+            except:
+                pass
+            
+            # Configuration Chrome
             options = uc.ChromeOptions()
-
-            # --- Options essentielles pour la stabilité en conteneur ---
+            
+            # === OPTIONS CONTAINER-FRIENDLY ===
             options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage') # Indispensable pour éviter les crashs dans Docker
+            options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1280,800')
-            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+            options.add_argument('--disable-software-rasterizer')
+            options.add_argument('--disable-background-timer-throttling')
+            options.add_argument('--disable-backgrounding-occluded-windows')
+            options.add_argument('--disable-renderer-backgrounding')
+            options.add_argument('--disable-features=TranslateUI,VizDisplayCompositor')
+            options.add_argument('--disable-web-security')
+            options.add_argument('--disable-extensions')
+            options.add_argument('--disable-plugins')
+            options.add_argument('--disable-default-apps')
+            options.add_argument('--disable-sync')
+            options.add_argument('--disable-background-networking')
+            options.add_argument('--disable-blink-features=AutomationControlled')
             
-            # --- Configuration du proxy via une extension (la méthode qui fonctionne) ---
-            if self.use_proxy and not self.test_mode:
-                self.logger.info("🔗 Configuring Webshare proxy via extension...")
-                import os
-                plugin_path = '/tmp/proxy_auth_plugin'
-                
-                manifest_json = """
-                {
-                    "version": "1.0.0",
-                    "manifest_version": 2,
-                    "name": "Chrome Proxy",
-                    "permissions": ["proxy", "<all_urls>", "webRequest", "webRequestBlocking"],
-                    "background": { "scripts": ["background.js"] }
-                }
-                """
-                background_js = f'''
-                var config = {{
-                    mode: "fixed_servers",
-                    rules: {{
-                        singleProxy: {{
-                            scheme: "http",
-                            host: "{self.proxy_host}",
-                            port: parseInt("{self.proxy_port}")
-                        }}
-                    }}
-                }};
-                chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-                function callbackFn(details) {{
-                    return {{
-                        authCredentials: {{
-                            username: "{self.proxy_user}",
-                            password: "{self.proxy_pass}"
-                        }}
-                    }};
-                }}
-                chrome.webRequest.onAuthRequired.addListener(
-                    callbackFn,
-                    {{urls: ["<all_urls>"]}},
-                    ['blocking']
-                );
-                '''
-                
-                if not os.path.exists(plugin_path):
-                    os.makedirs(plugin_path)
-                with open(os.path.join(plugin_path, "manifest.json"), "w") as f:
-                    f.write(manifest_json)
-                with open(os.path.join(plugin_path, "background.js"), "w") as f:
-                    f.write(background_js)
-                
-                # On charge notre extension qui gère le proxy
-                options.add_argument(f'--load-extension={plugin_path}')
-                self.logger.info(f"Proxy Webshare configured for user: {self.proxy_user}")
-            else:
-                self.logger.info("⚠️ PROXY DISABLED - Direct connection")
+            # === HEADLESS MODE ===
+            if self.headless:
+                options.add_argument('--headless=new')
             
-            self.logger.info("⚙️ Creating Chrome instance...")
+            # === PERFORMANCE ===
+            options.add_argument('--memory-pressure-off')
+            options.add_argument('--max_old_space_size=512')
+            options.add_argument('--window-size=1280,720')
             
-            # Utiliser use_subprocess=True peut améliorer la stabilité
-            self.driver = uc.Chrome(options=options, use_subprocess=True) 
-            self.driver.set_page_load_timeout(45) # Un timeout un peu plus long
+            # === DISPLAY ===
+            if os.environ.get('DISPLAY'):
+                options.add_argument(f'--display={os.environ["DISPLAY"]}')
+            
+            # === PROXY ROTATIF ===
+            proxy_url = self.get_random_proxy()
+            options.add_argument(f'--proxy-server={proxy_url}')
+            self.logger.info(f"🔗 Using proxy: {proxy_url}")
+            
+            # === LOCALE ===
+            options.add_argument('--lang=fr-FR')
+            options.add_argument('--accept-lang=fr-FR,fr,en-US,en')
+            
+            # === USER AGENT ===
+            options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            
+            # === STABILITÉ ===
+            options.add_argument('--disable-crash-reporter')
+            options.add_argument('--disable-logging')
+            options.add_argument('--disable-breakpad')
+            options.add_argument('--no-first-run')
+            options.add_argument('--no-default-browser-check')
+            
+            # === PREFS POUR PERFORMANCE ===
+            prefs = {
+                "profile.managed_default_content_settings.images": 2,  # Bloquer images
+                "profile.default_content_setting_values.notifications": 2,
+                "profile.default_content_settings.popups": 0,
+                "profile.default_content_settings.geolocation": 2,
+                "profile.default_content_settings.media_stream": 2
+            }
+            options.add_experimental_option("prefs", prefs)
+            
+            # === BINARY PATH ===
+            options.binary_location = chrome_binary
+            
+            # Créer le driver
+            self.logger.info("⚙️ Creating Chrome driver...")
+            try:
+                self.driver = uc.Chrome(
+                    options=options,
+                    version_main=None
+                )
+            except Exception as e:
+                self.logger.warning(f"undetected-chromedriver failed: {e}, trying regular selenium...")
+                from selenium import webdriver
+                from selenium.webdriver.chrome.service import Service
+                service = Service()
+                self.driver = webdriver.Chrome(service=service, options=options)
+            
+            # Configuration post-création
+            self.driver.set_page_load_timeout(20)
             self.driver.implicitly_wait(5)
             
-            self.logger.info("✅ Chrome instance created. Testing connectivity...")
-            try:
-                self.driver.get("https://httpbin.org/ip")
-                time.sleep(2)
-                # On vérifie que la page contient bien du contenu avant de continuer
-                ip_info = self.driver.find_element(By.TAG_NAME, "pre").text
-                self.logger.info(f"✅ Connection successful! IP: {json.loads(ip_info).get('origin')}")
-            except Exception as e:
-                self.logger.error(f"❌ Failed to test connectivity. The browser might be blocked or the proxy failed. Error: {e}")
-                # Si même le test de connexion échoue, on arrête le driver
-                self.driver.quit()
-                return False
-
+            # Test de base
+            self.logger.info("🧪 Testing driver...")
+            self.driver.get("data:text/html,<html><body><h1>Test</h1></body></html>")
+            time.sleep(1)
+            
+            self.logger.info("✅ Chrome driver setup successful")
+            self.driver_failures = 0
             return True
             
         except Exception as e:
-            self.logger.error(f"❌ Critical driver setup failed: {e}", exc_info=True)
-            if self.driver:
-                self.driver.quit()
-            return False
-    
-    def search_company_website(self, company: Dict) -> Dict:
-        """Recherche le site web d'une entreprise"""
-        result = {
-            **company,  # Conserver toutes les données originales
-            'website_url': None,
-            'phone': None,
-            'hasWebsite': False,
-            'websiteSource': 'not_found',
-            'processed_at': datetime.now().isoformat(),
-            'session_id': self.session_id
-        }
-        
-        try:
-            search_query = company.get('searchQuery', '')
-            if not search_query:
-                search_query = f"{company.get('searchName', '')} {company.get('activity', '')} {company.get('ville', '')}"
+            self.logger.error(f"❌ Driver setup failed: {e}")
+            self.driver_failures += 1
             
-            self.logger.info(f"🔍 Searching: {company.get('searchName', 'Unknown')}")
-            
-            # Google Maps search
-            maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
-            
-            try:
-                self.driver.get(maps_url)
-                time.sleep(random.uniform(2, 4))
-                
-                # Accepter cookies si nécessaire
-                try:
-                    cookie_selectors = [
-                        "//button[contains(., 'Tout accepter')]",
-                        "//button[contains(., 'Accept all')]",
-                        "#L2AGLb"
-                    ]
-                    for selector in cookie_selectors:
-                        try:
-                            if selector.startswith('#'):
-                                button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                            else:
-                                button = self.driver.find_element(By.XPATH, selector)
-                            button.click()
-                            time.sleep(1)
-                            break
-                        except:
-                            continue
-                except:
-                    pass
-                
-                # Attendre et cliquer sur le premier résultat
-                try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, '[role="feed"], [role="main"]'))
-                    )
-                    
-                    # Cliquer sur le premier résultat
-                    first_result = self.driver.find_element(By.CSS_SELECTOR, 'a[href*="/maps/place/"]')
-                    self.driver.execute_script("arguments[0].click();", first_result)
-                    time.sleep(random.uniform(2, 3))
-                    
-                    # Chercher le site web
-                    website_selectors = [
-                        'a[data-item-id="authority"]',
-                        'a.lcr4fd',
-                        'button[data-item-id="authority"]',
-                        '[data-item-id="authority"] a'
-                    ]
-                    
-                    for selector in website_selectors:
-                        try:
-                            website_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                            href = website_elem.get_attribute('href')
-                            if href and 'http' in href and 'google' not in href:
-                                result.update({
-                                    'website_url': href,
-                                    'hasWebsite': True,
-                                    'websiteSource': 'google_maps'
-                                })
-                                self.logger.info(f"🌐 Website found: {href}")
-                                break
-                        except:
-                            continue
-                    
-                    # Chercher le téléphone
-                    phone_selectors = [
-                        'button[data-item-id^="phone:tel:"]',
-                        '[data-item-id^="phone"] span'
-                    ]
-                    
-                    for selector in phone_selectors:
-                        try:
-                            phone_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                            phone_text = phone_elem.text.strip()
-                            
-                            if not phone_text and 'data-item-id' in phone_elem.get_attribute('outerHTML'):
-                                phone_id = phone_elem.get_attribute('data-item-id')
-                                if 'tel:' in phone_id:
-                                    phone_text = phone_id.split('tel:')[1]
-                            
-                            if phone_text and re.search(r'0[1-9][\s\-\.]*(?:\d[\s\-\.]*){8}', phone_text):
-                                result['phone'] = phone_text
-                                self.logger.info(f"📞 Phone found: {phone_text}")
-                                break
-                        except:
-                            continue
-                    
-                except TimeoutException:
-                    self.logger.warning(f"⚠️ Timeout for {company.get('searchName')}")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Maps search failed for {company.get('searchName')}: {e}")
-                
-            except Exception as e:
-                self.logger.error(f"❌ Error searching {company.get('searchName')}: {e}")
-                self.stats['errors'] += 1
-                result['error'] = str(e)
-            
-            # Mise à jour statistiques
-            self.stats['processed'] += 1
-            if result['hasWebsite']:
-                self.stats['with_website'] += 1
-            if result.get('phone'):
-                self.stats['with_phone'] += 1
-                
-        except Exception as e:
-            self.logger.error(f"❌ Critical error for {company.get('searchName')}: {e}")
-            result['error'] = str(e)
-            self.stats['errors'] += 1
-        
-        return result
-    
-    def process_batch(self, companies: List[Dict]) -> List[Dict]:
-        """Traite un batch d'entreprises"""
-        results = []
-        
-        self.stats['total_companies'] = len(companies)
-        self.logger.info(f"🚀 Starting batch: {len(companies)} companies")
-        
-        if not self.setup_driver():
-            self.logger.error("❌ Failed to initialize Chrome")
-            return []
-        
-        try:
-            for i, company in enumerate(companies, 1):
-                try:
-                    self.logger.info(f"📋 Processing {i}/{len(companies)}: {company.get('searchName', 'Unknown')}")
-                    
-                    result = self.search_company_website(company)
-                    results.append(result)
-                    
-                    # Petit délai entre les recherches
-                    if i < len(companies):
-                        time.sleep(random.uniform(1, 3))
-                    
-                except Exception as e:
-                    self.logger.error(f"❌ Error processing company {i}: {e}")
-                    # Ajouter un résultat d'erreur
-                    error_result = {
-                        **company,
-                        'website_url': None,
-                        'phone': None,
-                        'hasWebsite': False,
-                        'websiteSource': 'error',
-                        'error': str(e),
-                        'processed_at': datetime.now().isoformat()
-                    }
-                    results.append(error_result)
-                    continue
-            
-        finally:
             if self.driver:
                 try:
                     self.driver.quit()
                 except:
                     pass
-        
-        # Log des statistiques finales
-        self.logger.info(f"📊 Batch completed: {self.stats['processed']}/{self.stats['total_companies']} processed")
-        self.logger.info(f"🌐 Websites found: {self.stats['with_website']}")
-        self.logger.info(f"📞 Phones found: {self.stats['with_phone']}")
-        self.logger.info(f"❌ Errors: {self.stats['errors']}")
-        
-        return results
-
-def main():
-    parser = argparse.ArgumentParser(description='Website Finder for Naosite - Batch Mode')
-    
-    # Mode batch
-    parser.add_argument('--batch-mode', action='store_true', help='Process multiple companies from stdin JSON')
-    parser.add_argument('--find-websites-only', action='store_true', help='Only find websites, do not analyze quality')
-    
-    # Options
-    parser.add_argument('--session-id', help='Session ID for tracking')
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    parser.add_argument('--no-proxy', action='store_true', help='Disable proxy (for testing)')
-    parser.add_argument('--test-mode', action='store_true', help='Enable test mode (limit processing)')
-    
-    # Argument query pour compatibilité (optionnel en mode batch)
-    parser.add_argument('query', nargs='?', help='Business search query (not used in batch mode)')
-    
-    args = parser.parse_args()
-    
-    if not args.batch_mode and not args.query:
-        parser.error("query argument is required when not in batch mode")
-    
-    try:
-        if args.batch_mode:
-            # Mode batch : lire depuis stdin
-            logging.info("📥 Reading input data...")
+                self.driver = None
             
-            input_data = sys.stdin.read().strip()
-            if not input_data:
-                logging.error("❌ No input data received")
-                sys.exit(1)
+            return False
+    
+    def ensure_driver_ready(self):
+        """S'assurer que le driver est prêt"""
+        if not self.driver:
+            return self.setup_driver()
+        
+        try:
+            # Test simple
+            current_url = self.driver.current_url
+            return True
+        except Exception as e:
+            self.logger.warning(f"Driver check failed: {e}")
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except:
+                    pass
+                self.driver = None
             
+            if self.driver_failures < self.max_failures:
+                self.logger.info("🔄 Restarting driver...")
+                return self.setup_driver()
+            else:
+                self.logger.error(f"❌ Max driver failures reached")
+                return False
+    
+    def search_google_maps(self, search_query: str, limit: int = 1, exclude_with_website: bool = False) -> List[Dict]:
+        """Recherche sur Google Maps avec extraction complète"""
+        results = []
+        
+        if not self.ensure_driver_ready():
+            self.logger.error("❌ Driver not ready, cannot proceed")
+            return []
+        
+        try:
+            self.logger.info(f"🔍 Searching Google Maps: {search_query}")
+            
+            # URL Google Maps
+            maps_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
+            
+            self.driver.get(maps_url)
+            time.sleep(random.uniform(3, 5))
+            
+            # Accepter cookies Google
             try:
-                companies = json.loads(input_data)
-                logging.info(f"📊 Data loaded from stdin")
-            except json.JSONDecodeError as e:
-                logging.error(f"❌ Invalid JSON input: {e}")
-                sys.exit(1)
-            
-            if not isinstance(companies, list):
-                logging.error("❌ Input must be a JSON array of companies")
-                sys.exit(1)
-            
-            logging.info(f"📋 Loaded {len(companies)} companies")
-            
-            # Mode test : limiter à 3 entreprises
-            if args.test_mode and len(companies) > 3:
-                companies = companies[:3]
-                logging.info(f"🧪 TEST MODE: Limited to {len(companies)} companies")
-            
-            # Traitement batch
-            finder = WebsiteFinderBatch(
-                session_id=args.session_id,
-                debug=args.debug,
-                use_proxy=not args.no_proxy,
-                test_mode=args.test_mode
-            )
-            
-            results = finder.process_batch(companies)
-            
-            # Output : une ligne JSON par entreprise
-            logging.info("📤 Outputting results...")
-            for result in results:
-                print(json.dumps(result, ensure_ascii=False))
+                cookie_selectors = [
+                    "//button[contains(text(), 'Tout accepter')]",
+                    "//button[contains(text(), 'Accept all')]",
+                    "//button[@id='L2AGLb']"
+                ]
                 
-            if args.debug:
-                logging.info(f"✅ Batch processing completed: {len(results)} results")
-        
-        else:
-            # Mode simple query (pour compatibilité)
-            logging.error("❌ Single query mode not implemented in batch version")
-            sys.exit(1)
+                for selector in cookie_selectors:
+                    try:
+                        button = self.driver.find_element(By.XPATH, selector)
+                        if button.is_displayed():
+                            button.click()
+                            time.sleep(1)
+                            self.logger.debug("✅ Cookies accepted")
+                            break
+                    except:
+                        continue
+            except:
+                pass
             
-    except Exception as e:
-        logging.error(f"❌ Batch failed: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+            # Attendre résultats Maps
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.any_of(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '[role="feed"]')),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '[role="main"]')),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '.Nv2PK'))
+                    )
+                )
+                
+                # Trouver et cliquer sur les résultats business
+                business_selectors = [
+                    'a[href*="/maps/place/"]',
+                    '[data-result-index] a',
+                    '.Nv2PK .hfpxzc'
+                ]
+                
+                business_links = []
+                for selector in business_selectors:
+                    try:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if elements:
+                            business_links = elements[:limit]
+                            break
+                    except:
+                        continue
+                
+                if not business_links:
+                    self.logger.warning("⚠️ No business results found")
+                    return []
+                
+                # Traiter chaque business
+                for i, link in enumerate(business_links):
+                    try:
+                        self.logger.info(f"📋 Processing business {i+1}/{len(business_links)}")
+                        
+                        # Cliquer sur le business
+                        self.driver.execute_script("arguments[0].click();", link)
+                        time.sleep(random.uniform(2, 4))
+                        
+                        # Extraire les données
+                        business_data = self.extract_business_data()
+                        
+                        if business_data:
+                            # Enrichir avec métadonnées
+                            business_data.update({
+                                'source': 'google_maps',
+                                'search_query': search_query,
+                                'position': i + 1,
+                                'scraped_at': datetime.now().isoformat(),
+                                'session_id': self.session_id
+                            })
+                            
+                            # Filtrer si demandé
+                            if exclude_with_website:
+                                if not business_data.get('has_website', False):
+                                    results.append(business_data)
+                                    self.logger.info(f"✅ Added (no website): {business_data.get('name', 'Unknown')}")
+                                else:
+                                    self.logger.info(f"🌐 Excluded (has website): {business_data.get('name', 'Unknown')}")
+                            else:
+                                results.append(business_data)
+                        
+                        # Délai entre businesses
+                        if i < len(business_links) - 1:
+                            time.sleep(random.uniform(1, 2))
+                            
+                    except Exception as e:
+                        self.logger.error(f"❌ Error processing business {i+1}: {e}")
+                        continue
+                        
+            except TimeoutException:
+                self.logger.warning("⚠️ Timeout waiting for Maps results")
+                return []
+                
+        except Exception as e:
+            self.logger.error(f"❌ Maps search error: {e}")
+            return []
+        
+        self.logger.info(f"📊 Extracted {len(results)} results from Google Maps")
+        return results
+    
+    def extract_business_data(self) -> Optional[Dict]:
+        """Extraire les données d'un business depuis la page Maps"""
+        try:
+            data = {
+                'name': None,
+                'address': None,
+                'phone': None,
+                'website': None,
+                'has_website': False,
+                'rating': None,
+                'reviews_count': None
+            }
+            
+            # === NOM DE L'ENTREPRISE ===
+            name_selectors = [
+                'h1.DUwDvf.fontHeadlineLarge',
+                '.qBF1Pd',
+                'h1[class*="fontHeadline"]',
+                '[role="heading"][aria-level="1"]',
+                'h1'
+            ]
+            
+            for selector in name_selectors:
+                try:
+                    name_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if name_elem and name_elem.text.strip():
+                        data['name'] = name_elem.text.strip()[:150]
+                        break
+                except:
+                    continue
+            
+            # === SITE WEB (CRITIQUE) ===
+            website_selectors = [
+                'a[data-item-id="authority"]',
+                'a.lcr4fd',
+                'button[data-item-id="authority"]',
+                '[data-item-id="authority"] a',
+                'a[href*="http"]:not([href*="google.com"]):not([href*="maps"]):not([href*="youtube"])'
+            ]
+            
+            for selector in website_selectors:
+                try:
+                    website_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if website_elem:
+                        href = website_elem.get_attribute('href')
+                        if href and 'http' in href and self.is_valid_website(href):
+                            data['website'] = href[:200]
+                            data['has_website'] = True
+                            self.logger.info(f"🌐 Website found: {href}")
+                            break
+                except:
+                    continue
+            
+            # === TÉLÉPHONE ===
+            phone_selectors = [
+                'button[data-item-id^="phone:tel:"]',
+                '[data-item-id^="phone"] span',
+                'button[aria-label*="téléphone"]',
+                'span[dir="ltr"]'
+            ]
+            
+            for selector in phone_selectors:
+                try:
+                    phone_elems = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for phone_elem in phone_elems:
+                        phone_text = phone_elem.text.strip()
+                        
+                        # Essayer data-item-id si pas de texte
+                        if not phone_text and 'data-item-id' in phone_elem.get_attribute('outerHTML'):
+                            phone_id = phone_elem.get_attribute('data-item-id')
+                            if 'tel:' in phone_id:
+                                phone_text = phone_id.split('tel:')[1]
+                        
+                        # Valider numéro français
+                        if phone_text and self.is_valid_french_phone(phone_text):
+                            data['phone'] = phone_text[:50]
+                            self.logger.info(f"📞 Phone found: {phone_text}")
+                            break
+                    
+                    if data.get('phone'):
+                        break
+                except:
+                    continue
+            
+            # === ADRESSE ===
+            address_selectors = [
+                'button[data-item-id="address"]',
+                '[data-item-id="address"] span',
+                '.W4Efsd:last-child > .W4Efsd:nth-of-type(1) > span:last-child'
+            ]
+            
+            for selector in address_selectors:
+                try:
+                    addr_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if addr_elem and addr_
