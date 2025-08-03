@@ -1,4 +1,3 @@
-# Configuration Fly.io pour Naosite n8n - Version Corrigée
 app = 'naosite-leads-mdvmcg'
 primary_region = 'iad'
 
