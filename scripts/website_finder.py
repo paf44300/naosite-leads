@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Website Finder pour Naosite - Compatible n8n Input
-Traite les données directement depuis n8n sendInputToCommand
+Website Finder pour Naosite - Avec timeouts et debug
+Version ultra-robuste pour éviter les blocages
 """
 
 import json
@@ -10,10 +10,11 @@ import argparse
 import sys
 import logging
 import re
+import signal
 from typing import Optional, Dict, Tuple
 import random
 from datetime import datetime
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus
 
 try:
     import undetected_chromedriver as uc
@@ -25,10 +26,16 @@ try:
 except ImportError:
     SELENIUM_AVAILABLE = False
 
+class TimeoutError(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("Operation timed out")
+
 class WebsiteFinder:
     def __init__(self, session_id: str = None, debug: bool = False, headless: bool = True):
         if not SELENIUM_AVAILABLE:
-            raise ImportError("Please install: pip install undetected-chromedriver selenium beautifulsoup4")
+            raise ImportError("Please install: pip install undetected-chromedriver selenium")
             
         self.session_id = session_id or f"finder_{int(time.time())}"
         self.debug = debug
@@ -43,8 +50,12 @@ class WebsiteFinder:
         
         self.driver = None
         
+        # ✅ TIMEOUTS STRICTS
+        self.max_search_time = 30  # 30 secondes max par entreprise
+        self.driver_timeout = 15   # 15 secondes pour les éléments
+        
     def setup_logging(self):
-        level = logging.DEBUG if self.debug else logging.WARNING
+        level = logging.DEBUG if self.debug else logging.INFO
         logging.basicConfig(
             level=level,
             format=f'[{self.session_id}] %(levelname)s: %(message)s',
@@ -53,68 +64,91 @@ class WebsiteFinder:
         self.logger = logging.getLogger(__name__)
     
     def setup_driver(self):
-        """Configure Chrome avec proxy Webshare"""
+        """Configure Chrome avec proxy et timeouts stricts"""
         try:
             options = uc.ChromeOptions()
             
-            # Configuration proxy
+            # ✅ CONFIGURATION PROXY
             proxy_string = f"{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}"
             options.add_argument(f'--proxy-server=http://{proxy_string}')
             
-            # Options standard
+            # ✅ OPTIONS OPTIMISÉES POUR VITESSE
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
             options.add_argument('--disable-web-security')
             options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--window-size=1920,1080')
+            options.add_argument('--disable-extensions')
+            options.add_argument('--disable-plugins')
+            options.add_argument('--disable-images')  # ✅ Plus rapide sans images
+            options.add_argument('--disable-javascript')  # ✅ Plus rapide sans JS complexe
+            options.add_argument('--window-size=1280,720')  # ✅ Plus petit
             options.add_argument('--lang=fr-FR')
+            
+            # ✅ TIMEOUTS RÉSEAU STRICTS
+            options.add_argument('--page-load-strategy=eager')
+            options.add_argument('--timeout=10')
             
             if self.headless:
                 options.add_argument('--headless=new')
             
-            # User agent français
-            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            # User agent français léger
+            options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36')
             
+            # ✅ CRÉER DRIVER AVEC TIMEOUT
             self.driver = uc.Chrome(options=options, version_main=None)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            self.driver.implicitly_wait(10)
             
-            self.logger.info("Chrome driver initialized with Webshare proxy")
+            # ✅ TIMEOUTS STRICTS
+            self.driver.set_page_load_timeout(10)  # 10 sec max pour charger
+            self.driver.implicitly_wait(5)         # 5 sec max pour trouver éléments
+            
+            # Anti-détection minimal
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            self.logger.info("✅ Chrome driver ready with strict timeouts")
             return True
             
         except Exception as e:
-            self.logger.error(f"Failed to setup driver: {e}")
+            self.logger.error(f"❌ Driver setup failed: {e}")
             return False
 
     def extract_website_and_phone_from_maps(self, search_query: str) -> Tuple[Optional[str], Optional[str]]:
-        """Cherche le site web ET le téléphone sur Google Maps"""
+        """Cherche site web ET téléphone avec timeout strict"""
         website_url = None
         phone = None
         
         try:
+            # ✅ TIMEOUT GLOBAL pour cette fonction
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(20)  # 20 secondes MAX
+            
             search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
+            self.logger.info(f"🗺️ Searching Maps: {search_url}")
+            
             self.driver.get(search_url)
+            time.sleep(2)  # ✅ Délai réduit
             
-            time.sleep(random.uniform(3, 5))
-            
-            # Accepter cookies
+            # ✅ ACCEPTER COOKIES RAPIDEMENT
             try:
-                accept_button = self.driver.find_element(By.XPATH, "//button[contains(., 'Tout accepter')]")
+                accept_button = WebDriverWait(self.driver, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Tout accepter')]"))
+                )
                 accept_button.click()
                 time.sleep(1)
+                self.logger.debug("✅ Cookies accepted")
             except:
-                pass
+                self.logger.debug("⚠️ No cookies popup")
             
-            # Chercher le premier résultat
+            # ✅ CHERCHER PREMIER RÉSULTAT
             try:
-                first_result = WebDriverWait(self.driver, 10).until(
+                first_result = WebDriverWait(self.driver, 8).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, '[role="feed"] a[href*="/maps/place/"]'))
                 )
                 first_result.click()
-                time.sleep(random.uniform(2, 4))
+                time.sleep(2)
+                self.logger.debug("✅ First result clicked")
                 
-                # Site web
+                # ✅ SITE WEB - RECHERCHE RAPIDE
                 website_selectors = [
                     'a[data-item-id="authority"]',
                     'a.lcr4fd',
@@ -123,16 +157,18 @@ class WebsiteFinder:
                 
                 for selector in website_selectors:
                     try:
-                        website_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                        if website_elem:
-                            href = website_elem.get_attribute('href')
-                            if href and 'http' in href and 'google' not in href:
-                                website_url = href
-                                break
+                        website_elem = WebDriverWait(self.driver, 2).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                        )
+                        href = website_elem.get_attribute('href')
+                        if href and 'http' in href and 'google' not in href:
+                            website_url = href
+                            self.logger.info(f"🌐 Website found: {href}")
+                            break
                     except:
                         continue
                 
-                # Téléphone
+                # ✅ TÉLÉPHONE - RECHERCHE RAPIDE
                 phone_selectors = [
                     'button[data-item-id^="phone:tel:"]',
                     '[data-item-id^="phone"] span'
@@ -140,61 +176,68 @@ class WebsiteFinder:
                 
                 for selector in phone_selectors:
                     try:
-                        phone_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                        if phone_elem:
-                            phone_text = phone_elem.text.strip()
-                            if not phone_text and 'data-item-id' in phone_elem.get_attribute('outerHTML'):
-                                phone_id = phone_elem.get_attribute('data-item-id')
-                                if 'tel:' in phone_id:
-                                    phone_text = phone_id.split('tel:')[1]
-                            
-                            if phone_text and self.is_valid_french_phone(phone_text):
-                                phone = phone_text
-                                break
+                        phone_elem = WebDriverWait(self.driver, 2).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                        )
+                        phone_text = phone_elem.text.strip()
+                        
+                        if not phone_text and 'data-item-id' in phone_elem.get_attribute('outerHTML'):
+                            phone_id = phone_elem.get_attribute('data-item-id')
+                            if 'tel:' in phone_id:
+                                phone_text = phone_id.split('tel:')[1]
+                        
+                        if phone_text and self.is_valid_french_phone(phone_text):
+                            phone = phone_text
+                            self.logger.info(f"📞 Phone found: {phone}")
+                            break
                     except:
                         continue
                         
             except TimeoutException:
-                self.logger.debug("No Maps results found")
+                self.logger.warning("⚠️ No Maps results found quickly")
                 
+        except TimeoutError:
+            self.logger.error("⏰ Maps search TIMEOUT (20s)")
         except Exception as e:
-            self.logger.error(f"Error in Maps search: {e}")
+            self.logger.error(f"❌ Maps search error: {e}")
+        finally:
+            signal.alarm(0)  # ✅ Annuler timeout
             
         return website_url, phone
 
     def is_valid_french_phone(self, phone: str) -> bool:
-        """Valide un numéro de téléphone français"""
-        if not phone:
+        """Valide un numéro français rapidement"""
+        if not phone or len(phone) < 10:
             return False
         
         clean_phone = re.sub(r'[^\d+]', '', phone)
-        patterns = [
-            r'^0[1-9]\d{8}$',
-            r'^\+33[1-9]\d{8}$',
-            r'^33[1-9]\d{8}$',
-        ]
-        
-        return any(re.match(pattern, clean_phone) for pattern in patterns)
+        return bool(re.match(r'^(0[1-9]|\\+33[1-9]|33[1-9])\\d{8}$', clean_phone))
     
     def find_website(self, search_query: str) -> Dict:
-        """Fonction principale - trouve le site web ET le téléphone"""
+        """Fonction principale avec timeout global"""
+        start_time = time.time()
         result = {
             'search_query': search_query,
             'website_url': None,
             'phone': None,
             'source': None,
             'found_at': None,
-            'session_id': self.session_id
+            'session_id': self.session_id,
+            'processing_time': 0
         }
         
-        if not self.setup_driver():
-            result['error'] = 'Driver setup failed'
-            return result
-        
         try:
-            self.logger.info(f"Searching for: {search_query}")
+            # ✅ TIMEOUT GLOBAL PER COMPANY
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(self.max_search_time)
             
-            # Chercher sur Google Maps
+            if not self.setup_driver():
+                result['error'] = 'Driver setup failed'
+                return result
+            
+            self.logger.info(f"🔍 Searching: {search_query}")
+            
+            # ✅ MAPS SEULEMENT (pour l'instant)
             website_url, phone = self.extract_website_and_phone_from_maps(search_query)
             
             if website_url or phone:
@@ -204,60 +247,58 @@ class WebsiteFinder:
                     'source': 'google_maps',
                     'found_at': datetime.now().isoformat()
                 })
+                self.logger.info(f"✅ Found: {website_url or 'No website'} / {phone or 'No phone'}")
             else:
                 result['source'] = 'not_found'
+                self.logger.info("❌ Nothing found")
                 
+        except TimeoutError:
+            result['error'] = f'Search timeout ({self.max_search_time}s)'
+            self.logger.error(f"⏰ TIMEOUT after {self.max_search_time}s")
         except Exception as e:
             result['error'] = str(e)
-            self.logger.error(f"Search failed: {e}")
-            
+            self.logger.error(f"❌ Search failed: {e}")
         finally:
+            signal.alarm(0)  # ✅ Annuler timeout
             if self.driver:
-                self.driver.quit()
+                try:
+                    self.driver.quit()
+                except:
+                    pass
+            
+            # ✅ TEMPS DE TRAITEMENT
+            result['processing_time'] = round(time.time() - start_time, 2)
                 
         return result
 
 def main():
-    parser = argparse.ArgumentParser(description='Website Finder for Naosite')
-    parser.add_argument('--batch-mode', action='store_true', help='Process batch from stdin')
-    parser.add_argument('--find-websites-only', action='store_true', help='Only find websites')
-    parser.add_argument('--session-id', help='Session ID for tracking')
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    parser.add_argument('--no-headless', action='store_true', help='Show browser window')
+    parser = argparse.ArgumentParser(description='Website Finder - Fast & Robust')
+    parser.add_argument('--batch-mode', action='store_true')
+    parser.add_argument('--find-websites-only', action='store_true')
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--no-headless', action='store_true')
+    parser.add_argument('--max-companies', type=int, default=25, help='Max companies to process')
     
     args = parser.parse_args()
     
     try:
         if args.batch_mode:
-            # ✅ LIRE DEPUIS STDIN (n8n sendInputToCommand)
             input_text = sys.stdin.read().strip()
             
-            # ✅ GESTION DES FORMATS n8n
             try:
-                # Cas 1: n8n envoie directement le JSON
-                if input_text.startswith('[') or input_text.startswith('{'):
-                    input_data = json.loads(input_text)
-                # Cas 2: n8n envoie une string JSON
-                else:
-                    input_data = json.loads(input_text)
-                
-                # Normaliser en liste
+                input_data = json.loads(input_text)
                 if not isinstance(input_data, list):
                     input_data = [input_data]
-                    
             except json.JSONDecodeError as e:
-                logging.error(f"JSON parse error: {e}")
-                print(json.dumps({'error': f'Invalid JSON input: {e}'}, ensure_ascii=False))
+                print(json.dumps({'error': f'Invalid JSON: {e}'}, ensure_ascii=False))
                 sys.exit(1)
             
-            # Créer le finder
-            finder = WebsiteFinder(
-                session_id=args.session_id,
-                debug=args.debug,
-                headless=not args.no_headless
-            )
+            # ✅ LIMITER LE NOMBRE (pour éviter les timeouts)
+            input_data = input_data[:args.max_companies]
+            total = len(input_data)
             
-            # Traiter chaque entreprise
+            logging.info(f"🚀 Starting batch processing: {total} companies (max {args.max_companies})")
+            
             results = []
             for i, item in enumerate(input_data):
                 query = item.get('searchQuery', '')
@@ -265,67 +306,68 @@ def main():
                     continue
                 
                 try:
-                    # Délai entre recherches
-                    if i > 0:
-                        time.sleep(random.uniform(2, 4))
+                    logging.info(f"📋 Processing ({i+1}/{total}): {item.get('searchName', query)}")
+                    
+                    # ✅ CRÉER NOUVELLE INSTANCE POUR CHAQUE RECHERCHE
+                    finder = WebsiteFinder(
+                        session_id=f"batch_{i}",
+                        debug=args.debug,
+                        headless=not args.no_headless
+                    )
                     
                     result = finder.find_website(query)
                     
-                    # ✅ ENRICHIR avec toutes les données originales
+                    # Enrichir avec données originales
                     enhanced_result = {
-                        'search_query': result['search_query'],
-                        'website_url': result.get('website_url'),
-                        'phone': result.get('phone'),
-                        'source': result.get('source'),
-                        'found_at': result.get('found_at'),
-                        'session_id': result.get('session_id'),
-                        
-                        # Données originales
+                        **result,
                         **{k: v for k, v in item.items() if k != 'searchQuery'},
-                        
-                        # Données dérivées
                         'hasWebsite': bool(result.get('website_url')),
-                        'websiteSource': result.get('source', 'not_found')
+                        'websiteSource': result.get('source', 'not_found'),
+                        'batch_position': i + 1,
+                        'batch_total': total
                     }
                     
-                    # Nettoyer None
-                    enhanced_result = {k: v for k, v in enhanced_result.items() if v is not None}
-                    results.append(enhanced_result)
+                    results.append({k: v for k, v in enhanced_result.items() if v is not None})
                     
-                    # Log progrès
-                    status = "🌐 Website" if result.get('website_url') else "📞 Phone" if result.get('phone') else "❌ Nothing"
-                    logging.info(f"{status} ({i+1}/{len(input_data)}): {item.get('searchName', query)}")
+                    # ✅ DÉLAI ENTRE RECHERCHES
+                    if i < total - 1:
+                        time.sleep(random.uniform(1, 3))
                     
                 except Exception as e:
-                    # Garder données de base en cas d'erreur
                     error_result = {
                         **item,
                         'website_url': None,
                         'phone': None,
                         'source': 'error',
                         'error': str(e),
-                        'hasWebsite': False
+                        'hasWebsite': False,
+                        'processing_time': 0
                     }
                     results.append(error_result)
-                    logging.error(f"Error processing {item.get('searchName', query)}: {e}")
+                    logging.error(f"❌ Error ({i+1}/{total}): {e}")
             
-            # ✅ OUTPUT pour n8n (une ligne par résultat)
+            # ✅ OUTPUT RÉSULTATS
             for result in results:
                 print(json.dumps(result, ensure_ascii=False))
                 
-            # Stats
-            total = len(results)
+            # ✅ STATS FINALES
+            total_time = sum(r.get('processing_time', 0) for r in results)
             with_website = sum(1 for r in results if r.get('hasWebsite'))
             with_phone = sum(1 for r in results if r.get('phone'))
-            logging.info(f"📊 Batch: {total} processed, {with_website} websites, {with_phone} phones")
+            
+            logging.info(f"📊 BATCH COMPLETE:")
+            logging.info(f"   • {len(results)} processed in {total_time:.1f}s")
+            logging.info(f"   • {with_website} websites found")
+            logging.info(f"   • {with_phone} phones found")
+            logging.info(f"   • Avg {total_time/len(results):.1f}s per company")
                 
         else:
-            print("Batch mode only supported")
+            print("Batch mode only")
             sys.exit(1)
             
     except Exception as e:
-        print(json.dumps({'error': f'Processing failed: {e}'}, ensure_ascii=False))
-        logging.error(f"Fatal error: {e}")
+        print(json.dumps({'error': f'Fatal error: {e}'}, ensure_ascii=False))
+        logging.error(f"💀 Fatal error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
