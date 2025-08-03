@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Website Finder - Mode Batch Optimisé
-UN SEUL driver Chrome pour toutes les recherches du batch
+Website Finder avec logs visibles dans n8n
 """
 
 import json
@@ -14,6 +13,26 @@ from typing import Optional, Dict, Tuple
 import random
 from datetime import datetime
 from urllib.parse import quote_plus
+
+# ✅ FONCTION POUR LOGS VISIBLES DANS N8N
+def log_to_n8n(message, level="INFO"):
+    """Log qui apparaît dans n8n ET dans stderr"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    formatted_message = f"[{timestamp}] {level}: {message}"
+    
+    # Vers stderr pour n8n
+    print(formatted_message, file=sys.stderr, flush=True)
+    
+    # Aussi en JSON pour debug
+    log_entry = {
+        "timestamp": timestamp,
+        "level": level,
+        "message": message,
+        "type": "log_entry"
+    }
+    
+    # Note: On évite de print le JSON car ça interfère avec les résultats
+    # print(json.dumps(log_entry, ensure_ascii=False), file=sys.stderr)
 
 try:
     import undetected_chromedriver as uc
@@ -39,47 +58,36 @@ class BatchWebsiteFinder:
         self.session_id = session_id or f"batch_{int(time.time())}"
         self.debug = debug
         self.headless = headless
-        self.setup_logging()
         
         # Configuration proxy Webshare
         self.proxy_host = "p.webshare.io"
         self.proxy_port = "80"
-        self.proxy_user = "xftpfnvt-rotate"
+        self.proxy_user = "xftpfnvt"
         self.proxy_pass = "yulnmnbiq66j"
         
-        # ✅ UN SEUL DRIVER POUR TOUT LE BATCH
         self.driver = None
         self.driver_initialized = False
         
-        # Timeouts optimisés
-        self.max_search_time = 15  # 15 sec max par entreprise
-        self.batch_timeout = 600   # 10 minutes max pour tout le batch
+        # Timeouts
+        self.max_search_time = 15
+        self.batch_timeout = 600
         
-    def setup_logging(self):
-        level = logging.DEBUG if self.debug else logging.INFO
-        logging.basicConfig(
-            level=level,
-            format=f'[{self.session_id}] %(levelname)s: %(message)s',
-            stream=sys.stderr
-        )
-        self.logger = logging.getLogger(__name__)
-    
     def setup_driver_once(self):
-        """Configure le driver Chrome UNE SEULE FOIS pour tout le batch"""
+        """Configure le driver Chrome UNE SEULE FOIS"""
         if self.driver_initialized:
             return True
             
         try:
-            self.logger.info("🚀 Initializing Chrome driver for entire batch...")
+            log_to_n8n("🚀 Initializing Chrome driver for batch...")
             
             options = uc.ChromeOptions()
             
-            # ✅ CONFIGURATION PROXY WEBSHARE
+            # Configuration proxy
             proxy_string = f"{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}"
             options.add_argument(f'--proxy-server=http://{proxy_string}')
-            self.logger.info(f"🌐 Using proxy: {self.proxy_host}:{self.proxy_port}")
+            log_to_n8n(f"🌐 Using proxy: {self.proxy_host}:{self.proxy_port}")
             
-            # Options optimisées pour vitesse et stabilité
+            # Options optimisées
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
@@ -87,18 +95,17 @@ class BatchWebsiteFinder:
             options.add_argument('--disable-blink-features=AutomationControlled')
             options.add_argument('--disable-extensions')
             options.add_argument('--disable-plugins')
-            options.add_argument('--disable-images')  # Plus rapide
+            options.add_argument('--disable-images')
             options.add_argument('--window-size=1280,720')
             options.add_argument('--lang=fr-FR')
             
-            # Mode headless
             if self.headless:
                 options.add_argument('--headless=new')
             
-            # User agent français
             options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # ✅ CRÉER LE DRIVER
+            # Créer le driver
+            log_to_n8n("⚙️ Creating Chrome instance...")
             self.driver = uc.Chrome(options=options, version_main=None)
             
             # Configuration timeouts
@@ -108,25 +115,25 @@ class BatchWebsiteFinder:
             # Anti-détection
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
-            # ✅ TEST DE CONNECTIVITÉ
-            self.logger.info("🧪 Testing Google connectivity...")
+            # Test de connectivité
+            log_to_n8n("🧪 Testing Google connectivity...")
             self.driver.get("https://www.google.fr")
             time.sleep(2)
             
             title = self.driver.title
             if "Google" in title:
-                self.logger.info(f"✅ Google accessible via proxy: {title}")
+                log_to_n8n(f"✅ Google accessible via proxy: {title}")
                 self.driver_initialized = True
                 
-                # ✅ ACCEPTER LES COOKIES UNE FOIS POUR TOUTES
+                # Accepter les cookies
                 self.accept_google_cookies_once()
                 return True
             else:
-                self.logger.error(f"❌ Unexpected Google response: {title}")
+                log_to_n8n(f"❌ Unexpected Google response: {title}", "ERROR")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"❌ Driver setup failed: {e}")
+            log_to_n8n(f"❌ Driver setup failed: {e}", "ERROR")
             if self.driver:
                 try:
                     self.driver.quit()
@@ -136,13 +143,12 @@ class BatchWebsiteFinder:
             return False
     
     def accept_google_cookies_once(self):
-        """Accepte les cookies Google une seule fois"""
+        """Accepte les cookies Google"""
         try:
             cookie_selectors = [
                 "//button[contains(text(), 'Tout accepter')]",
                 "//button[contains(text(), 'Accept all')]",
-                "#L2AGLb",
-                ".QS5gu"
+                "#L2AGLb"
             ]
             
             for selector in cookie_selectors:
@@ -156,17 +162,17 @@ class BatchWebsiteFinder:
                             EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                         )
                     accept_button.click()
-                    self.logger.info("✅ Google cookies accepted globally")
+                    log_to_n8n("✅ Google cookies accepted")
                     time.sleep(2)
                     return
                 except:
                     continue
                     
         except Exception as e:
-            self.logger.debug(f"ℹ️ No cookie popup: {e}")
+            log_to_n8n(f"ℹ️ No cookie popup found")
 
-    def search_single_company(self, search_query: str, company_index: int, total_companies: int) -> Dict:
-        """Recherche UNE entreprise avec le driver existant"""
+    def search_single_company(self, search_query: str, company_name: str, company_index: int, total_companies: int) -> Dict:
+        """Recherche UNE entreprise"""
         start_time = time.time()
         result = {
             'search_query': search_query,
@@ -181,13 +187,12 @@ class BatchWebsiteFinder:
         }
         
         try:
-            # ✅ TIMEOUT PAR RECHERCHE
             signal.signal(signal.SIGALRM, timeout_handler)
             signal.alarm(self.max_search_time)
             
-            self.logger.info(f"🔍 ({company_index + 1}/{total_companies}) Searching: {search_query}")
+            log_to_n8n(f"🔍 ({company_index + 1}/{total_companies}) {company_name}")
             
-            # ✅ RECHERCHE MAPS AVEC DRIVER EXISTANT
+            # Recherche Maps
             website_url, phone = self.search_maps_with_existing_driver(search_query)
             
             if website_url or phone:
@@ -197,58 +202,56 @@ class BatchWebsiteFinder:
                     'source': 'google_maps',
                     'found_at': datetime.now().isoformat()
                 })
-                self.logger.info(f"✅ ({company_index + 1}/{total_companies}) Found: {website_url or 'No site'} / {phone or 'No phone'}")
+                status = f"✅ Found: {website_url or 'No site'}"
+                if phone:
+                    status += f" / {phone}"
+                log_to_n8n(f"   {status}")
             else:
                 result['source'] = 'not_found'
-                self.logger.info(f"❌ ({company_index + 1}/{total_companies}) Nothing found")
+                log_to_n8n(f"   ❌ Nothing found")
                 
         except TimeoutError:
             result['error'] = f'Search timeout ({self.max_search_time}s)'
-            self.logger.warning(f"⏰ ({company_index + 1}/{total_companies}) Timeout")
+            log_to_n8n(f"   ⏰ Timeout ({self.max_search_time}s)", "WARNING")
         except Exception as e:
             result['error'] = str(e)
-            self.logger.error(f"❌ ({company_index + 1}/{total_companies}) Error: {e}")
+            log_to_n8n(f"   ❌ Error: {e}", "ERROR")
         finally:
             signal.alarm(0)
             result['processing_time'] = round(time.time() - start_time, 2)
             
-            # ✅ DÉLAI ENTRE RECHERCHES (important pour éviter rate limiting)
+            # Délai entre recherches
             if company_index < total_companies - 1:
                 delay = random.uniform(2, 4)
-                self.logger.debug(f"⏱️ Waiting {delay:.1f}s before next search...")
+                log_to_n8n(f"   ⏱️ Waiting {delay:.1f}s...")
                 time.sleep(delay)
                 
         return result
 
     def search_maps_with_existing_driver(self, search_query: str) -> Tuple[Optional[str], Optional[str]]:
-        """Recherche Maps avec le driver déjà initialisé"""
+        """Recherche Maps avec driver existant"""
         website_url = None
         phone = None
         
         try:
             search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
-            self.logger.debug(f"🗺️ Maps URL: {search_url}")
             
-            # ✅ NAVIGATION
+            # Navigation
             self.driver.get(search_url)
             time.sleep(random.uniform(2, 4))
             
-            # ✅ ATTENDRE LES RÉSULTATS
+            # Attendre résultats
             try:
-                # Attendre que le feed de résultats soit présent
                 WebDriverWait(self.driver, 8).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[role="feed"], .section-result'))
                 )
-                self.logger.debug("✅ Results container found")
             except TimeoutException:
-                self.logger.debug("⚠️ No results container found")
                 return None, None
             
-            # ✅ CLIQUER SUR PREMIER RÉSULTAT
+            # Cliquer premier résultat
             first_result_selectors = [
                 '[role="feed"] a[href*="/maps/place/"]:first-child',
-                'a[href*="/maps/place/"]:first-of-type',
-                '.section-result:first-child a'
+                'a[href*="/maps/place/"]:first-of-type'
             ]
             
             clicked = False
@@ -257,30 +260,23 @@ class BatchWebsiteFinder:
                     first_result = WebDriverWait(self.driver, 5).until(
                         EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                     )
-                    
-                    # Scroll vers l'élément si nécessaire
                     self.driver.execute_script("arguments[0].scrollIntoView(true);", first_result)
                     time.sleep(1)
-                    
                     first_result.click()
-                    self.logger.debug(f"✅ Clicked result with: {selector}")
                     time.sleep(3)
                     clicked = True
                     break
-                except Exception as e:
-                    self.logger.debug(f"⚠️ Selector {selector} failed: {e}")
+                except:
                     continue
             
             if not clicked:
-                self.logger.debug("❌ Could not click any result")
                 return None, None
             
-            # ✅ EXTRAIRE SITE WEB
+            # Chercher site web
             website_selectors = [
                 'a[data-item-id="authority"]',
                 'a.lcr4fd',
-                'a[href*="http"]:not([href*="google.com"]):not([href*="maps"])',
-                '[data-item-id="authority"] span'
+                'a[href*="http"]:not([href*="google.com"]):not([href*="maps"])'
             ]
             
             for selector in website_selectors:
@@ -291,16 +287,14 @@ class BatchWebsiteFinder:
                     href = website_elem.get_attribute('href')
                     if href and 'http' in href and 'google' not in href:
                         website_url = href
-                        self.logger.debug(f"🌐 Website: {href}")
                         break
                 except:
                     continue
             
-            # ✅ EXTRAIRE TÉLÉPHONE
+            # Chercher téléphone
             phone_selectors = [
                 'button[data-item-id^="phone:tel:"]',
-                '[data-item-id^="phone"] span',
-                'span[role="img"][aria-label*="téléphone"]'
+                '[data-item-id^="phone"] span'
             ]
             
             for selector in phone_selectors:
@@ -317,13 +311,12 @@ class BatchWebsiteFinder:
                     
                     if phone_text and self.is_valid_french_phone(phone_text):
                         phone = phone_text
-                        self.logger.debug(f"📞 Phone: {phone}")
                         break
                 except:
                     continue
                     
         except Exception as e:
-            self.logger.debug(f"⚠️ Maps search error: {e}")
+            pass
             
         return website_url, phone
 
@@ -336,31 +329,30 @@ class BatchWebsiteFinder:
         return bool(re.match(r'^(0[1-9]|\+33[1-9]|33[1-9])\d{8}$', clean_phone))
     
     def process_batch(self, companies_data: list) -> list:
-        """Traite tout le batch avec UN SEUL driver"""
+        """Traite tout le batch"""
         
-        # ✅ TIMEOUT GLOBAL DU BATCH
         signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(self.batch_timeout)
         
         try:
             total_companies = len(companies_data)
-            self.logger.info(f"🚀 Starting batch: {total_companies} companies")
+            log_to_n8n(f"🚀 Starting batch: {total_companies} companies")
             
-            # ✅ INITIALISER LE DRIVER UNE SEULE FOIS
             if not self.setup_driver_once():
                 raise Exception("Failed to initialize Chrome driver")
             
             results = []
             start_time = time.time()
             
-            # ✅ TRAITER CHAQUE ENTREPRISE SÉQUENTIELLEMENT
+            # Traiter chaque entreprise
             for i, company in enumerate(companies_data):
                 query = company.get('searchQuery', '')
+                company_name = company.get('searchName', 'Unknown')
+                
                 if not query:
                     continue
                 
-                # Recherche avec le driver existant
-                result = self.search_single_company(query, i, total_companies)
+                result = self.search_single_company(query, company_name, i, total_companies)
                 
                 # Enrichir avec données originales
                 enhanced_result = {
@@ -372,41 +364,39 @@ class BatchWebsiteFinder:
                 
                 results.append({k: v for k, v in enhanced_result.items() if v is not None})
             
-            # ✅ STATS FINALES
+            # Stats finales
             batch_time = time.time() - start_time
             with_website = sum(1 for r in results if r.get('hasWebsite'))
             with_phone = sum(1 for r in results if r.get('phone'))
             errors = sum(1 for r in results if r.get('error'))
             
-            self.logger.info(f"📊 BATCH COMPLETE in {batch_time:.1f}s:")
-            self.logger.info(f"   • {len(results)}/{total_companies} processed")
-            self.logger.info(f"   • {with_website} websites found")
-            self.logger.info(f"   • {with_phone} phones found")
-            self.logger.info(f"   • {errors} errors")
-            self.logger.info(f"   • Avg {batch_time/len(results):.1f}s per company")
+            log_to_n8n(f"📊 BATCH COMPLETE in {batch_time:.1f}s:")
+            log_to_n8n(f"   • {len(results)}/{total_companies} processed")
+            log_to_n8n(f"   • {with_website} websites found")
+            log_to_n8n(f"   • {with_phone} phones found")
+            log_to_n8n(f"   • {errors} errors")
             
             return results
             
         except TimeoutError:
-            self.logger.error(f"⏰ BATCH TIMEOUT ({self.batch_timeout}s)")
+            log_to_n8n(f"⏰ BATCH TIMEOUT ({self.batch_timeout}s)", "ERROR")
             return results if 'results' in locals() else []
         except Exception as e:
-            self.logger.error(f"❌ Batch processing failed: {e}")
+            log_to_n8n(f"❌ Batch failed: {e}", "ERROR")
             return results if 'results' in locals() else []
         finally:
             signal.alarm(0)
-            # ✅ FERMER LE DRIVER À LA FIN DU BATCH
             if self.driver:
                 try:
                     self.driver.quit()
-                    self.logger.info("🔚 Chrome driver closed")
+                    log_to_n8n("🔚 Chrome driver closed")
                 except:
                     pass
 
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description='Website Finder - Batch Mode Optimized')
+    parser = argparse.ArgumentParser(description='Website Finder with Enhanced Logging')
     parser.add_argument('--batch-mode', action='store_true')
     parser.add_argument('--find-websites-only', action='store_true')
     parser.add_argument('--debug', action='store_true')
@@ -416,33 +406,38 @@ def main():
     
     try:
         if args.batch_mode:
-            # ✅ LIRE INPUT
+            log_to_n8n("📥 Reading input data...")
+            
             input_text = sys.stdin.read().strip()
             input_data = json.loads(input_text)
             
             if not isinstance(input_data, list):
                 input_data = [input_data]
             
-            # ✅ CRÉER LE BATCH FINDER
+            log_to_n8n(f"📋 Loaded {len(input_data)} companies")
+            
+            # Créer le finder
             finder = BatchWebsiteFinder(
                 debug=args.debug,
                 headless=not args.no_headless
             )
             
-            # ✅ TRAITER TOUT LE BATCH
+            # Traiter le batch
             results = finder.process_batch(input_data)
             
-            # ✅ OUTPUT POUR N8N
+            log_to_n8n(f"📤 Outputting {len(results)} results...")
+            
+            # Output pour n8n
             for result in results:
                 print(json.dumps(result, ensure_ascii=False))
                 
         else:
-            print("Batch mode only supported")
+            log_to_n8n("❌ Batch mode only supported", "ERROR")
             sys.exit(1)
             
     except Exception as e:
-        print(json.dumps({'error': f'Batch processing failed: {e}'}, ensure_ascii=False))
-        logging.error(f"💀 Fatal error: {e}")
+        log_to_n8n(f"💀 Fatal error: {e}", "ERROR")
+        print(json.dumps({'error': f'Fatal error: {e}'}, ensure_ascii=False))
         sys.exit(1)
 
 if __name__ == "__main__":
