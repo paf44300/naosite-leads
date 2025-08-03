@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Website Finder pour Naosite - Mode Batch
-Traite plusieurs entreprises en une seule exécution
+Website Finder pour Naosite - Compatible n8n Input
+Traite les données directement depuis n8n sendInputToCommand
 """
 
 import json
@@ -21,7 +21,6 @@ try:
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.common.exceptions import TimeoutException, NoSuchElementException
-    from bs4 import BeautifulSoup
     SELENIUM_AVAILABLE = True
 except ImportError:
     SELENIUM_AVAILABLE = False
@@ -89,7 +88,7 @@ class WebsiteFinder:
             return False
 
     def extract_website_and_phone_from_maps(self, search_query: str) -> Tuple[Optional[str], Optional[str]]:
-        """Cherche le site web ET le téléphone sur Google Maps en une seule requête"""
+        """Cherche le site web ET le téléphone sur Google Maps"""
         website_url = None
         phone = None
         
@@ -97,10 +96,9 @@ class WebsiteFinder:
             search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
             self.driver.get(search_url)
             
-            # Attendre le chargement
             time.sleep(random.uniform(3, 5))
             
-            # Accepter cookies si nécessaire
+            # Accepter cookies
             try:
                 accept_button = self.driver.find_element(By.XPATH, "//button[contains(., 'Tout accepter')]")
                 accept_button.click()
@@ -116,12 +114,11 @@ class WebsiteFinder:
                 first_result.click()
                 time.sleep(random.uniform(2, 4))
                 
-                # ✅ CHERCHER LE SITE WEB
+                # Site web
                 website_selectors = [
                     'a[data-item-id="authority"]',
                     'a.lcr4fd',
-                    'a[href*="http"]:not([href*="google.com"]):not([href*="maps"])',
-                    '[data-item-id="authority"] span'
+                    'a[href*="http"]:not([href*="google.com"]):not([href*="maps"])'
                 ]
                 
                 for selector in website_selectors:
@@ -131,16 +128,14 @@ class WebsiteFinder:
                             href = website_elem.get_attribute('href')
                             if href and 'http' in href and 'google' not in href:
                                 website_url = href
-                                self.logger.info(f"Found website on Maps: {href}")
                                 break
                     except:
                         continue
                 
-                # ✅ CHERCHER LE TÉLÉPHONE (dans la même page)
+                # Téléphone
                 phone_selectors = [
                     'button[data-item-id^="phone:tel:"]',
-                    '[data-item-id^="phone"] span',
-                    '.W4Efsd:nth-child(2) span[jsinstance="*1"]'
+                    '[data-item-id^="phone"] span'
                 ]
                 
                 for selector in phone_selectors:
@@ -148,43 +143,16 @@ class WebsiteFinder:
                         phone_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                         if phone_elem:
                             phone_text = phone_elem.text.strip()
-                            
-                            # Si pas de texte, essayer l'attribut data
                             if not phone_text and 'data-item-id' in phone_elem.get_attribute('outerHTML'):
                                 phone_id = phone_elem.get_attribute('data-item-id')
                                 if 'tel:' in phone_id:
                                     phone_text = phone_id.split('tel:')[1]
                             
-                            # Valider le format français
                             if phone_text and self.is_valid_french_phone(phone_text):
                                 phone = phone_text
-                                self.logger.info(f"Found phone on Maps: {phone_text}")
                                 break
                     except:
                         continue
-                
-                # ✅ CHERCHER TÉLÉPHONE DANS LE TEXTE (fallback)
-                if not phone:
-                    try:
-                        page_text = self.driver.find_element(By.TAG_NAME, 'body').text
-                        # Chercher patterns téléphone français
-                        phone_patterns = [
-                            r'0[1-9](?:[-.\s]?\d{2}){4}',  # 01 23 45 67 89
-                            r'\+33[1-9](?:[-.\s]?\d{2}){4}',  # +33 1 23 45 67 89
-                        ]
-                        
-                        for pattern in phone_patterns:
-                            matches = re.findall(pattern, page_text)
-                            for match in matches:
-                                clean_phone = re.sub(r'[^\d+]', '', match)
-                                if self.is_valid_french_phone(clean_phone):
-                                    phone = match
-                                    self.logger.info(f"Found phone in text: {match}")
-                                    break
-                            if phone:
-                                break
-                    except:
-                        pass
                         
             except TimeoutException:
                 self.logger.debug("No Maps results found")
@@ -199,87 +167,17 @@ class WebsiteFinder:
         if not phone:
             return False
         
-        # Nettoyer le numéro
         clean_phone = re.sub(r'[^\d+]', '', phone)
-        
-        # Formats français valides
         patterns = [
-            r'^0[1-9]\d{8}$',      # 01 23 45 67 89
-            r'^\+33[1-9]\d{8}$',   # +33 1 23 45 67 89
-            r'^33[1-9]\d{8}$',     # 33 1 23 45 67 89
+            r'^0[1-9]\d{8}$',
+            r'^\+33[1-9]\d{8}$',
+            r'^33[1-9]\d{8}$',
         ]
         
-        for pattern in patterns:
-            if re.match(pattern, clean_phone):
-                return True
-        
-        return False
-    
-    def extract_website_from_google_search(self, search_query: str) -> Optional[str]:
-        """Cherche le site web via Google Search"""
-        try:
-            # Requête optimisée pour trouver le site officiel
-            search_url = f"https://www.google.com/search?q={quote_plus(search_query + ' site officiel')}"
-            self.driver.get(search_url)
-            
-            time.sleep(random.uniform(2, 4))
-            
-            # Accepter cookies Google
-            try:
-                accept_button = self.driver.find_element(By.XPATH, "//button[contains(., 'Tout accepter')]")
-                accept_button.click()
-                time.sleep(1)
-            except:
-                pass
-            
-            # Analyser les premiers résultats
-            result_selectors = [
-                'div.g h3 a',
-                'div.tF2Cxc a h3',
-                'div.yuRUbf a'
-            ]
-            
-            for selector in result_selectors:
-                try:
-                    results = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for result in results[:5]:  # Analyser les 5 premiers résultats
-                        try:
-                            href = result.get_attribute('href')
-                            if href and self.is_valid_business_website(href, search_query):
-                                self.logger.info(f"Found website via Google Search: {href}")
-                                return href
-                        except:
-                            continue
-                    break
-                except:
-                    continue
-                    
-        except Exception as e:
-            self.logger.error(f"Error in Google search: {e}")
-            
-        return None
-    
-    def is_valid_business_website(self, url: str, search_query: str) -> bool:
-        """Valide si l'URL est bien le site de l'entreprise"""
-        if not url or not url.startswith('http'):
-            return False
-            
-        # Exclure les sites génériques
-        exclude_domains = [
-            'facebook.com', 'linkedin.com', 'instagram.com', 'twitter.com',
-            'pagesjaunes.fr', 'societe.com', 'verif.com', 'infogreffe.fr',
-            'pappers.fr', 'score3.fr', 'mappy.com', 'yelp.fr',
-            'tripadvisor.fr', 'leboncoin.fr', 'youtube.com', 'wikipedia.org'
-        ]
-        
-        for domain in exclude_domains:
-            if domain in url.lower():
-                return False
-        
-        return True
+        return any(re.match(pattern, clean_phone) for pattern in patterns)
     
     def find_website(self, search_query: str) -> Dict:
-        """Fonction principale - trouve le site web ET le téléphone en une seule passe"""
+        """Fonction principale - trouve le site web ET le téléphone"""
         result = {
             'search_query': search_query,
             'website_url': None,
@@ -294,45 +192,21 @@ class WebsiteFinder:
             return result
         
         try:
-            self.logger.info(f"Searching website and phone for: {search_query}")
+            self.logger.info(f"Searching for: {search_query}")
             
-            # 1. Essayer Google Maps (site web ET téléphone en une fois)
+            # Chercher sur Google Maps
             website_url, phone = self.extract_website_and_phone_from_maps(search_query)
             
-            if website_url:
+            if website_url or phone:
                 result.update({
                     'website_url': website_url,
                     'phone': phone,
                     'source': 'google_maps',
                     'found_at': datetime.now().isoformat()
                 })
-                return result
-            
-            # 2. Fallback sur Google Search (site web seulement)
-            website_url = self.extract_website_from_google_search(search_query)
-            if website_url:
-                result.update({
-                    'website_url': website_url,
-                    'phone': phone,  # Garder le téléphone de Maps si trouvé
-                    'source': 'google_search',
-                    'found_at': datetime.now().isoformat()
-                })
-                return result
-            
-            # 3. Pas de site trouvé, mais peut-être un téléphone
-            if phone:
-                result.update({
-                    'website_url': None,
-                    'phone': phone,
-                    'source': 'phone_only',
-                    'found_at': datetime.now().isoformat()
-                })
-                return result
-            
-            # 4. Rien trouvé du tout
-            result['source'] = 'not_found'
-            self.logger.info(f"No website or phone found for: {search_query}")
-            
+            else:
+                result['source'] = 'not_found'
+                
         except Exception as e:
             result['error'] = str(e)
             self.logger.error(f"Search failed: {e}")
@@ -344,46 +218,39 @@ class WebsiteFinder:
         return result
 
 def main():
-    parser = argparse.ArgumentParser(description='Website Finder for Naosite - Batch Mode')
-    
-    # ✅ MODE BATCH PRINCIPAL
-    parser.add_argument('--batch-mode', action='store_true', help='Process multiple companies from stdin JSON')
-    
-    # Arguments optionnels
-    parser.add_argument('--find-websites-only', action='store_true', help='Only find websites, do not analyze quality')
+    parser = argparse.ArgumentParser(description='Website Finder for Naosite')
+    parser.add_argument('--batch-mode', action='store_true', help='Process batch from stdin')
+    parser.add_argument('--find-websites-only', action='store_true', help='Only find websites')
     parser.add_argument('--session-id', help='Session ID for tracking')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--no-headless', action='store_true', help='Show browser window')
     
-    # Arguments pour compatibilité (mode simple)
-    parser.add_argument('query', nargs='?', help='Business search query')
-    parser.add_argument('--siren', help='SIREN de l\'entreprise')
-    parser.add_argument('--siret', help='SIRET de l\'entreprise')
-    parser.add_argument('--company-name', help='Nom de l\'entreprise')
-    parser.add_argument('--activity', help='Activité de l\'entreprise')
-    parser.add_argument('--city', help='Ville de l\'entreprise')
-    parser.add_argument('--zip-code', help='Code postal')
-    parser.add_argument('--address', help='Adresse complète')
-    parser.add_argument('--is-ei', action='store_true', help='Est un entrepreneur individuel')
-    parser.add_argument('--batch-number', type=int, help='Numéro de batch')
-    
     args = parser.parse_args()
     
-    if args.batch_mode:
-        # ✅ MODE BATCH: Lire tous les items depuis stdin
-        try:
-            # Lire le JSON depuis stdin
-            input_line = sys.stdin.read().strip()
-            if not input_line:
-                print(json.dumps({'error': 'No input data'}, ensure_ascii=False))
+    try:
+        if args.batch_mode:
+            # ✅ LIRE DEPUIS STDIN (n8n sendInputToCommand)
+            input_text = sys.stdin.read().strip()
+            
+            # ✅ GESTION DES FORMATS n8n
+            try:
+                # Cas 1: n8n envoie directement le JSON
+                if input_text.startswith('[') or input_text.startswith('{'):
+                    input_data = json.loads(input_text)
+                # Cas 2: n8n envoie une string JSON
+                else:
+                    input_data = json.loads(input_text)
+                
+                # Normaliser en liste
+                if not isinstance(input_data, list):
+                    input_data = [input_data]
+                    
+            except json.JSONDecodeError as e:
+                logging.error(f"JSON parse error: {e}")
+                print(json.dumps({'error': f'Invalid JSON input: {e}'}, ensure_ascii=False))
                 sys.exit(1)
             
-            # Parser le JSON
-            input_data = json.loads(input_line)
-            if not isinstance(input_data, list):
-                input_data = [input_data]
-            
-            # Créer une instance du finder (réutilisée pour tout le batch)
+            # Créer le finder
             finder = WebsiteFinder(
                 session_id=args.session_id,
                 debug=args.debug,
@@ -398,15 +265,14 @@ def main():
                     continue
                 
                 try:
-                    # Petit délai entre les recherches
+                    # Délai entre recherches
                     if i > 0:
                         time.sleep(random.uniform(2, 4))
                     
                     result = finder.find_website(query)
                     
-                    # Enrichir avec les données de l'item
+                    # ✅ ENRICHIR avec toutes les données originales
                     enhanced_result = {
-                        # Données de recherche
                         'search_query': result['search_query'],
                         'website_url': result.get('website_url'),
                         'phone': result.get('phone'),
@@ -414,136 +280,53 @@ def main():
                         'found_at': result.get('found_at'),
                         'session_id': result.get('session_id'),
                         
-                        # ✅ DONNÉES ORIGINALES DE L'ENTREPRISE
-                        'siren': item.get('siren'),
-                        'siret': item.get('siret'),
-                        'searchName': item.get('searchName'),
-                        'activity': item.get('activity'),
-                        'ville': item.get('ville'),
-                        'codePostal': item.get('codePostal'),
-                        'departement': item.get('departement'),
-                        'isEI': item.get('isEI'),
-                        'batchNumber': item.get('batchNumber'),
-                        'searchQuery': query,
-                        
-                        # ✅ ADRESSE COMPLÈTE
-                        'adresseComplete': item.get('adresseComplete'),
+                        # Données originales
+                        **{k: v for k, v in item.items() if k != 'searchQuery'},
                         
                         # Données dérivées
                         'hasWebsite': bool(result.get('website_url')),
                         'websiteSource': result.get('source', 'not_found')
                     }
                     
-                    # Nettoyer les valeurs None
+                    # Nettoyer None
                     enhanced_result = {k: v for k, v in enhanced_result.items() if v is not None}
-                    
                     results.append(enhanced_result)
                     
-                    # Log du progrès
-                    progress = f"({i+1}/{len(input_data)})"
-                    if result.get('website_url'):
-                        logging.info(f"🌐 {progress} Website found: {item.get('searchName')}")
-                    elif result.get('phone'):
-                        logging.info(f"📞 {progress} Phone found: {item.get('searchName')}")
-                    else:
-                        logging.info(f"❌ {progress} Nothing found: {item.get('searchName')}")
+                    # Log progrès
+                    status = "🌐 Website" if result.get('website_url') else "📞 Phone" if result.get('phone') else "❌ Nothing"
+                    logging.info(f"{status} ({i+1}/{len(input_data)}): {item.get('searchName', query)}")
                     
                 except Exception as e:
-                    # En cas d'erreur, garder les données de base
+                    # Garder données de base en cas d'erreur
                     error_result = {
-                        'search_query': query,
+                        **item,
                         'website_url': None,
                         'phone': None,
                         'source': 'error',
                         'error': str(e),
-                        'siren': item.get('siren'),
-                        'searchName': item.get('searchName'),
-                        'hasWebsite': False,
-                        'adresseComplete': item.get('adresseComplete')
+                        'hasWebsite': False
                     }
-                    results.append({k: v for k, v in error_result.items() if v is not None})
-                    logging.error(f"Error processing {item.get('searchName')}: {e}")
+                    results.append(error_result)
+                    logging.error(f"Error processing {item.get('searchName', query)}: {e}")
             
-            # Output tous les résultats (un par ligne pour n8n)
+            # ✅ OUTPUT pour n8n (une ligne par résultat)
             for result in results:
                 print(json.dumps(result, ensure_ascii=False))
                 
-            # Stats finales
+            # Stats
             total = len(results)
             with_website = sum(1 for r in results if r.get('hasWebsite'))
             with_phone = sum(1 for r in results if r.get('phone'))
-            logging.info(f"📊 Batch complete: {total} processed, {with_website} websites, {with_phone} phones")
+            logging.info(f"📊 Batch: {total} processed, {with_website} websites, {with_phone} phones")
                 
-        except Exception as e:
-            print(json.dumps({'error': f'Batch processing failed: {e}'}, ensure_ascii=False))
-            sys.exit(1)
-    
-    else:
-        # ✅ MODE CLASSIQUE: Un seul item (pour compatibilité)
-        if not args.query:
-            print("Error: query required in non-batch mode")
+        else:
+            print("Batch mode only supported")
             sys.exit(1)
             
-        try:
-            finder = WebsiteFinder(
-                session_id=args.session_id,
-                debug=args.debug,
-                headless=not args.no_headless
-            )
-            
-            result = finder.find_website(args.query)
-            
-            # ✅ ENRICHIR avec les données passées en paramètres
-            enhanced_result = {
-                'search_query': result['search_query'],
-                'website_url': result.get('website_url'),
-                'phone': result.get('phone'),
-                'source': result.get('source'),
-                'found_at': result.get('found_at'),
-                'session_id': result.get('session_id'),
-                
-                # Données de l'entreprise
-                'siren': args.siren,
-                'siret': args.siret,
-                'searchName': args.company_name,
-                'activity': args.activity,
-                'ville': args.city,
-                'codePostal': args.zip_code,
-                'departement': args.zip_code[:2] if args.zip_code else None,
-                'adresseComplete': args.address,
-                'isEI': args.is_ei,
-                'batchNumber': args.batch_number,
-                'searchQuery': args.query,
-                
-                # Données dérivées
-                'hasWebsite': bool(result.get('website_url')),
-                'websiteSource': result.get('source', 'not_found')
-            }
-            
-            # Nettoyer les valeurs None
-            enhanced_result = {k: v for k, v in enhanced_result.items() if v is not None}
-            
-            # Output JSON pour n8n
-            print(json.dumps(enhanced_result, ensure_ascii=False))
-            
-        except Exception as e:
-            error_result = {
-                'search_query': args.query,
-                'website_url': None,
-                'phone': None,
-                'source': 'error',
-                'error': str(e),
-                'found_at': datetime.now().isoformat(),
-                'siren': args.siren,
-                'searchName': args.company_name,
-                'hasWebsite': False
-            }
-            # Nettoyer les valeurs None
-            error_result = {k: v for k, v in error_result.items() if v is not None}
-            
-            print(json.dumps(error_result, ensure_ascii=False))
-            logging.error(f"Website finder failed: {e}")
-            sys.exit(1)
+    except Exception as e:
+        print(json.dumps({'error': f'Processing failed: {e}'}, ensure_ascii=False))
+        logging.error(f"Fatal error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
