@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Website Finder avec configuration Webshare Rotating Proxy CORRECTE
-Format: http://username:password@p.webshare.io:port
+Website Finder - Compatible avec arguments n8n directs
+Lit les données directement depuis les arguments de ligne de commande
 """
 
 import json
@@ -49,7 +49,7 @@ class BatchWebsiteFinder:
         # ✅ CONFIGURATION WEBSHARE ROTATING PROXY
         self.proxy_domain = "p.webshare.io"
         self.proxy_port = "80"
-        self.proxy_username = "xftpfnvt-rotate"  # Username avec suffixe -rotate
+        self.proxy_username = "xftpfnvt-rotate"
         self.proxy_password = "yulnmnbiq66j"
         
         # ✅ FORMAT ROTATING PROXY ENDPOINT
@@ -73,7 +73,6 @@ class BatchWebsiteFinder:
             options = uc.ChromeOptions()
             
             # ✅ CONFIGURATION WEBSHARE ROTATING PROXY
-            # Format: --proxy-server=http://username:password@p.webshare.io:port
             options.add_argument(f'--proxy-server={self.proxy_url}')
             log_to_n8n(f"🌐 Using Webshare rotating proxy: {self.proxy_domain}:{self.proxy_port}")
             log_to_n8n(f"👤 Username: {self.proxy_username}")
@@ -93,7 +92,6 @@ class BatchWebsiteFinder:
             if self.headless:
                 options.add_argument('--headless=new')
             
-            # User agent standard
             options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
             # ✅ CRÉER LE DRIVER
@@ -110,7 +108,7 @@ class BatchWebsiteFinder:
             # ✅ TEST DE CONNECTIVITÉ AVEC PROXY
             log_to_n8n("🧪 Testing proxy connectivity...")
             
-            # Test 1: Aller sur httpbin pour voir l'IP
+            # Test httpbin pour voir l'IP
             self.driver.get("https://httpbin.org/ip")
             time.sleep(3)
             
@@ -123,7 +121,7 @@ class BatchWebsiteFinder:
             except:
                 log_to_n8n("⚠️ Could not get IP info")
             
-            # Test 2: Tester Google France
+            # Test Google France
             log_to_n8n("🧪 Testing Google France access...")
             self.driver.get("https://www.google.fr")
             time.sleep(2)
@@ -133,7 +131,6 @@ class BatchWebsiteFinder:
                 log_to_n8n(f"✅ Google accessible via proxy: {title}")
                 self.driver_initialized = True
                 
-                # Accepter les cookies une fois
                 self.accept_google_cookies_once()
                 return True
             else:
@@ -156,8 +153,7 @@ class BatchWebsiteFinder:
             cookie_selectors = [
                 "//button[contains(text(), 'Tout accepter')]",
                 "//button[contains(text(), 'Accept all')]",
-                "#L2AGLb",
-                ".QS5gu"
+                "#L2AGLb"
             ]
             
             for selector in cookie_selectors:
@@ -176,7 +172,6 @@ class BatchWebsiteFinder:
                     return
                 except:
                     continue
-                    
         except Exception as e:
             log_to_n8n(f"ℹ️ No cookie popup found")
 
@@ -201,8 +196,6 @@ class BatchWebsiteFinder:
             
             log_to_n8n(f"🔍 ({company_index + 1}/{total_companies}) {company_name}")
             
-            # ✅ RECHERCHE MAPS AVEC ROTATION AUTOMATIQUE
-            # Chaque requête utilise automatiquement une IP différente grâce au rotating endpoint
             website_url, phone = self.search_maps_with_existing_driver(search_query)
             
             if website_url or phone:
@@ -230,27 +223,24 @@ class BatchWebsiteFinder:
             signal.alarm(0)
             result['processing_time'] = round(time.time() - start_time, 2)
             
-            # ✅ DÉLAI ENTRE RECHERCHES (important pour rotation)
             if company_index < total_companies - 1:
-                delay = random.uniform(3, 6)  # Délai plus long pour rotation
+                delay = random.uniform(3, 6)
                 log_to_n8n(f"   ⏱️ Waiting {delay:.1f}s for IP rotation...")
                 time.sleep(delay)
                 
         return result
 
     def search_maps_with_existing_driver(self, search_query: str) -> Tuple[Optional[str], Optional[str]]:
-        """Recherche Maps - chaque requête utilise une IP différente automatiquement"""
+        """Recherche Maps avec rotation automatique"""
         website_url = None
         phone = None
         
         try:
             search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
             
-            # ✅ NAVIGATION (IP rotation automatique)
             self.driver.get(search_url)
             time.sleep(random.uniform(3, 5))
             
-            # Attendre résultats
             try:
                 WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[role="feed"], .section-result'))
@@ -261,8 +251,7 @@ class BatchWebsiteFinder:
             # Cliquer premier résultat
             first_result_selectors = [
                 '[role="feed"] a[href*="/maps/place/"]:first-child',
-                'a[href*="/maps/place/"]:first-of-type',
-                '.section-result:first-child a'
+                'a[href*="/maps/place/"]:first-of-type'
             ]
             
             clicked = False
@@ -356,7 +345,6 @@ class BatchWebsiteFinder:
             results = []
             start_time = time.time()
             
-            # Traiter chaque entreprise séquentiellement
             for i, company in enumerate(companies_data):
                 query = company.get('searchQuery', '')
                 company_name = company.get('searchName', 'Unknown')
@@ -366,7 +354,6 @@ class BatchWebsiteFinder:
                 
                 result = self.search_single_company(query, company_name, i, total_companies)
                 
-                # Enrichir avec données originales
                 enhanced_result = {
                     **result,
                     **{k: v for k, v in company.items() if k != 'searchQuery'},
@@ -408,8 +395,11 @@ class BatchWebsiteFinder:
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description='Website Finder with Webshare Rotating Proxy')
-    parser.add_argument('--batch-mode', action='store_true')
+    parser = argparse.ArgumentParser(description='Website Finder for n8n')
+    
+    # ✅ MODE n8n : Lire depuis argument ou stdin
+    parser.add_argument('--data', help='JSON data as argument (for n8n)')
+    parser.add_argument('--batch-mode', action='store_true', help='Process batch mode')
     parser.add_argument('--find-websites-only', action='store_true')
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--no-headless', action='store_true')
@@ -417,42 +407,43 @@ def main():
     args = parser.parse_args()
     
     try:
-        if args.batch_mode:
-            log_to_n8n("📥 Reading input data...")
-            
-            input_text = sys.stdin.read().strip()
-            input_data = json.loads(input_text)
-            
-            if not isinstance(input_data, list):
-                input_data = [input_data]
-            
-            log_to_n8n(f"📋 Loaded {len(input_data)} companies")
-            
-            # ✅ CRÉER LE BATCH FINDER AVEC WEBSHARE
-            finder = BatchWebsiteFinder(
-                debug=args.debug,
-                headless=not args.no_headless
-            )
-            
-            # ✅ VÉRIFIER LA CONFIGURATION PROXY
-            if finder.proxy_username == "xftpfnvt-rotate":
-                log_to_n8n("✅ Using configured Webshare rotating proxy")
-            else:
-                log_to_n8n("❌ ERROR: Proxy configuration issue!", "ERROR")
-                sys.exit(1)
-            
-            # Traiter le batch
-            results = finder.process_batch(input_data)
-            
-            log_to_n8n(f"📤 Outputting {len(results)} results...")
-            
-            # Output pour n8n
-            for result in results:
-                print(json.dumps(result, ensure_ascii=False))
-                
+        log_to_n8n("📥 Reading input data...")
+        
+        # ✅ LIRE DONNÉES - De l'argument OU de stdin
+        if args.data:
+            # Mode argument (pour éviter les problèmes d'échappement)
+            input_data = json.loads(args.data)
+            log_to_n8n("📊 Data loaded from argument")
         else:
-            log_to_n8n("❌ Batch mode only supported", "ERROR")
-            sys.exit(1)
+            # Mode stdin (ancien)
+            input_text = sys.stdin.read().strip()
+            if not input_text:
+                log_to_n8n("❌ No input data provided", "ERROR")
+                sys.exit(1)
+            input_data = json.loads(input_text)
+            log_to_n8n("📊 Data loaded from stdin")
+        
+        if not isinstance(input_data, list):
+            input_data = [input_data]
+        
+        log_to_n8n(f"📋 Loaded {len(input_data)} companies")
+        
+        # Créer le finder
+        finder = BatchWebsiteFinder(
+            debug=args.debug,
+            headless=not args.no_headless
+        )
+        
+        log_to_n8n("✅ Using configured Webshare rotating proxy")
+        
+        # Traiter le batch
+        results = finder.process_batch(input_data)
+        
+        log_to_n8n(f"📤 Outputting {len(results)} results...")
+        
+        # Output pour n8n
+        for result in results:
+            print(json.dumps(result, ensure_ascii=False))
             
     except Exception as e:
         log_to_n8n(f"💀 Fatal error: {e}", "ERROR")
