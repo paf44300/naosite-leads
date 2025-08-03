@@ -434,13 +434,14 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--no-headless', action='store_true', help='Show browser window')
     
-    # Arguments pour garder les données (même si pas utilisés, pour compatibilité)
+    # Arguments pour garder les données
     parser.add_argument('--siren', help='SIREN de l\'entreprise')
     parser.add_argument('--siret', help='SIRET de l\'entreprise')
     parser.add_argument('--company-name', help='Nom de l\'entreprise')
     parser.add_argument('--activity', help='Activité de l\'entreprise')
     parser.add_argument('--city', help='Ville de l\'entreprise')
     parser.add_argument('--zip-code', help='Code postal')
+    parser.add_argument('--address', help='Adresse complète')  # ✅ NOUVEAU
     parser.add_argument('--is-ei', action='store_true', help='Est un entrepreneur individuel')
     parser.add_argument('--batch-number', type=int, help='Numéro de batch')
     
@@ -459,7 +460,7 @@ def main():
         enhanced_result = {
             'search_query': result['search_query'],
             'website_url': result.get('website_url'),
-            'phone': result.get('phone'),  # ✅ Inclure téléphone
+            'phone': result.get('phone'),
             'source': result.get('source'),
             'found_at': result.get('found_at'),
             'session_id': result.get('session_id'),
@@ -472,6 +473,7 @@ def main():
             'ville': args.city,
             'codePostal': args.zip_code,
             'departement': args.zip_code[:2] if args.zip_code else None,
+            'adresseComplete': args.address,  # ✅ NOUVEAU
             'isEI': args.is_ei,
             'batchNumber': args.batch_number,
             'searchQuery': args.query,
