@@ -64,82 +64,76 @@ class WebsiteFinderBatch:
         self.logger = logging.getLogger(__name__)
     
     def setup_driver(self):
-    try:
-        if self.test_mode:
-            self.logger.info("🧪 TEST MODE: No proxy, direct connection only")
         
-        self.logger.info("🚀 Initializing robust Chrome for batch processing...")
-        
-        options = uc.ChromeOptions()
-        
-        # --- Options anti-détection et de stabilité ---
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_argument('--window-size=1280,800')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--disable-extensions') # L'extension de proxy sera chargée plus bas
-        options.add_argument('--disable-images')
-        options.add_argument('--lang=fr-FR,fr')
-        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
-        
-        # Le mode headless est désactivé car trop détectable.
-        # Pour le faire fonctionner dans un conteneur, un écran virtuel (Xvfb) est nécessaire.
-        
-        # --- Configuration du proxy via une extension (méthode fiable) ---
-        if self.use_proxy and not self.test_mode:
-            self.logger.info("🔗 Configuring Webshare proxy via extension...")
-            import os
-            plugin_path = '/tmp/proxy_auth_plugin'
+        try:
+            if self.test_mode:
+                self.logger.info("🧪 TEST MODE: No proxy, direct connection only")
             
-            manifest_json = """
-            { "version": "1.0.0", "manifest_version": 2, "name": "Chrome Proxy", "permissions": ["proxy", "<all_urls>", "webRequest", "webRequestBlocking"], "background": { "scripts": ["background.js"] } }
-            """
-            background_js = f'''
-            var config = {{ mode: "fixed_servers", rules: {{ singleProxy: {{ scheme: "http", host: "{self.proxy_host}", port: parseInt("{self.proxy_port}") }} }} }};
-            chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-            function callbackFn(details) {{ return {{ authCredentials: {{ username: "{self.proxy_user}", password: "{self.proxy_pass}" }} }}; }}
-            chrome.webRequest.onAuthRequired.addListener(callbackFn, {{urls: ["<all_urls>"]}}, ['blocking']);
-            '''
+            self.logger.info("🚀 Initializing robust Chrome for batch processing...")
             
-            if not os.path.exists(plugin_path):
-                os.makedirs(plugin_path)
-            with open(os.path.join(plugin_path, "manifest.json"), "w") as f:
-                f.write(manifest_json)
-            with open(os.path.join(plugin_path, "background.js"), "w") as f:
-                f.write(background_js)
+            options = uc.ChromeOptions()
             
-            options.add_argument(f'--load-extension={plugin_path}')
-            self.logger.info(f"Proxy Webshare configured for user: {self.proxy_user}")
-        else:
-            self.logger.info("⚠️ PROXY DISABLED - Direct connection")
-        
-        self.logger.info("⚙️ Creating Chrome instance...")
-        
-        self.driver = uc.Chrome(options=options, version_main=None, use_subprocess=True)
-        self.driver.set_page_load_timeout(30)
-        self.driver.implicitly_wait(5)
-        
-        # Test de connectivité (maintenant qu'il est stable)
-        if not self.test_mode:
-            self.logger.info("🧪 Testing connectivity...")
-            try:
-                self.driver.get("https://httpbin.org/ip")
-                time.sleep(2)
-                ip_info_text = self.driver.find_element(By.TAG_NAME, "pre").text
-                ip_info = json.loads(ip_info_text)
-                self.logger.info(f"✅ Connection working! IP: {ip_info.get('origin')}")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Connection test failed (but driver is likely OK): {e}")
-        
-        return True
-        
-    except Exception as e:
-        self.logger.error(f"❌ Driver setup failed: {e}", exc_info=True)
-        return False
+            # --- Options anti-détection et de stabilité ---
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--window-size=1280,800')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--disable-extensions') # L'extension de proxy sera chargée plus bas
+            options.add_argument('--disable-images')
+            options.add_argument('--lang=fr-FR,fr')
+            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+            
+            # --- Configuration du proxy via une extension (méthode fiable) ---
+            if self.use_proxy and not self.test_mode:
+                self.logger.info("🔗 Configuring Webshare proxy via extension...")
+                import os
+                plugin_path = '/tmp/proxy_auth_plugin'
+                
+                manifest_json = """
+                { "version": "1.0.0", "manifest_version": 2, "name": "Chrome Proxy", "permissions": ["proxy", "<all_urls>", "webRequest", "webRequestBlocking"], "background": { "scripts": ["background.js"] } }
+                """
+                background_js = f'''
+                var config = {{ mode: "fixed_servers", rules: {{ singleProxy: {{ scheme: "http", host: "{self.proxy_host}", port: parseInt("{self.proxy_port}") }} }} }};
+                chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+                function callbackFn(details) {{ return {{ authCredentials: {{ username: "{self.proxy_user}", password: "{self.proxy_pass}" }} }}; }}
+                chrome.webRequest.onAuthRequired.addListener(callbackFn, {{urls: ["<all_urls>"]}}, ['blocking']);
+                '''
+                
+                if not os.path.exists(plugin_path):
+                    os.makedirs(plugin_path)
+                with open(os.path.join(plugin_path, "manifest.json"), "w") as f:
+                    f.write(manifest_json)
+                with open(os.path.join(plugin_path, "background.js"), "w") as f:
+                    f.write(background_js)
+                
+                options.add_argument(f'--load-extension={plugin_path}')
+                self.logger.info(f"Proxy Webshare configured for user: {self.proxy_user}")
+            else:
+                self.logger.info("⚠️ PROXY DISABLED - Direct connection")
+            
+            self.logger.info("⚙️ Creating Chrome instance...")
+            
+            self.driver = uc.Chrome(options=options, use_subprocess=True)
+            self.driver.set_page_load_timeout(30)
+            self.driver.implicitly_wait(5)
+            
+            # Test de connectivité
+            if not self.test_mode:
+                self.logger.info("🧪 Testing connectivity...")
+                try:
+                    self.driver.get("https://httpbin.org/ip")
+                    time.sleep(2)
+                    ip_info_text = self.driver.find_element(By.TAG_NAME, "pre").text
+                    ip_info = json.loads(ip_info_text)
+                    self.logger.info(f"✅ Connection working! IP: {ip_info.get('origin')}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Connection test failed (but driver is likely OK): {e}")
+            
+            return True
             
         except Exception as e:
-            self.logger.error(f"❌ Driver setup failed: {e}")
+            self.logger.error(f"❌ Driver setup failed: {e}", exc_info=True)
             return False
     
     def search_company_website(self, company: Dict) -> Dict:
