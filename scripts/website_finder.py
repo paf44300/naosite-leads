@@ -282,6 +282,16 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--no-headless', action='store_true', help='Show browser window')
     
+    # ✅ NOUVEAUX PARAMÈTRES pour conserver les données
+    parser.add_argument('--siren', help='SIREN de l\'entreprise')
+    parser.add_argument('--siret', help='SIRET de l\'entreprise')
+    parser.add_argument('--company-name', help='Nom de l\'entreprise')
+    parser.add_argument('--activity', help='Activité de l\'entreprise')
+    parser.add_argument('--city', help='Ville de l\'entreprise')
+    parser.add_argument('--zip-code', help='Code postal')
+    parser.add_argument('--is-ei', action='store_true', help='Est un entrepreneur individuel')
+    parser.add_argument('--batch-number', type=int, help='Numéro de batch')
+    
     args = parser.parse_args()
     
     try:
@@ -293,11 +303,40 @@ def main():
         
         result = finder.find_website(args.query)
         
+        # ✅ AJOUTER LES DONNÉES INITIALES AU RÉSULTAT
+        enhanced_result = {
+            # Données de recherche de site web
+            'search_query': result['search_query'],
+            'website_url': result.get('website_url'),
+            'source': result.get('source'),
+            'found_at': result.get('found_at'),
+            'session_id': result.get('session_id'),
+            
+            # ✅ DONNÉES INITIALES DE L'ENTREPRISE
+            'siren': args.siren,
+            'siret': args.siret,
+            'searchName': args.company_name,
+            'activity': args.activity,
+            'ville': args.city,
+            'codePostal': args.zip_code,
+            'departement': args.zip_code[:2] if args.zip_code else None,
+            'isEI': args.is_ei,
+            'batchNumber': args.batch_number,
+            'searchQuery': args.query,
+            
+            # Données dérivées
+            'hasWebsite': bool(result.get('website_url')),
+            'websiteSource': result.get('source', 'not_found')
+        }
+        
+        # Nettoyer les valeurs None
+        enhanced_result = {k: v for k, v in enhanced_result.items() if v is not None}
+        
         # Output JSON pour n8n
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(enhanced_result, ensure_ascii=False))
         
         if args.debug:
-            logging.info(f"Website finder result: {result}")
+            logging.info(f"Enhanced website finder result: {enhanced_result}")
             
     except Exception as e:
         error_result = {
@@ -305,8 +344,16 @@ def main():
             'website_url': None,
             'source': 'error',
             'error': str(e),
-            'found_at': datetime.now().isoformat()
+            'found_at': datetime.now().isoformat(),
+            # Garder les données même en cas d'erreur
+            'siren': args.siren,
+            'siret': args.siret,
+            'searchName': args.company_name,
+            'hasWebsite': False
         }
+        # Nettoyer les valeurs None
+        error_result = {k: v for k, v in error_result.items() if v is not None}
+        
         print(json.dumps(error_result, ensure_ascii=False))
         logging.error(f"Website finder failed: {e}")
         sys.exit(1)
