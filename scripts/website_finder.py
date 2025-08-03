@@ -47,11 +47,10 @@ class BatchWebsiteFinder:
         self.headless = headless
         
         # ✅ CONFIGURATION WEBSHARE ROTATING PROXY
-        # Vous devez remplacer ces valeurs par celles de votre dashboard Webshare
-        self.proxy_domain = "p.webshare.io"      # Domain Name de votre dashboard
-        self.proxy_port = "80"                   # Proxy Port de votre dashboard  
-        self.proxy_username = "xftpfnvt-rotate"    # Proxy Username de votre dashboard
-        self.proxy_password = "yulnmnbiq66j"    # Proxy Password de votre dashboard
+        self.proxy_domain = "p.webshare.io"
+        self.proxy_port = "80"
+        self.proxy_username = "xftpfnvt-rotate"  # Username avec suffixe -rotate
+        self.proxy_password = "yulnmnbiq66j"
         
         # ✅ FORMAT ROTATING PROXY ENDPOINT
         self.proxy_url = f"http://{self.proxy_username}:{self.proxy_password}@{self.proxy_domain}:{self.proxy_port}"
@@ -436,10 +435,10 @@ def main():
             )
             
             # ✅ VÉRIFIER LA CONFIGURATION PROXY
-            if finder.proxy_username == "YOUR_USERNAME":
-                log_to_n8n("❌ ERROR: Please update proxy credentials in script!", "ERROR")
-                log_to_n8n("   Edit the script and replace YOUR_USERNAME and YOUR_PASSWORD", "ERROR")
-                log_to_n8n("   with your actual Webshare credentials from the dashboard", "ERROR")
+            if finder.proxy_username == "xftpfnvt-rotate":
+                log_to_n8n("✅ Using configured Webshare rotating proxy")
+            else:
+                log_to_n8n("❌ ERROR: Proxy configuration issue!", "ERROR")
                 sys.exit(1)
             
             # Traiter le batch
