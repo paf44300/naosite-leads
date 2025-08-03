@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Website Finder - Compatible avec arguments n8n directs
-Lit les données directement depuis les arguments de ligne de commande
+Website Finder - Version de test SANS PROXY
+Pour vérifier que tout fonctionne côté scraping
 """
 
 import json
@@ -46,14 +46,8 @@ class BatchWebsiteFinder:
         self.debug = debug
         self.headless = headless
         
-        # ✅ CONFIGURATION WEBSHARE ROTATING PROXY
-        self.proxy_domain = "p.webshare.io"
-        self.proxy_port = "80"
-        self.proxy_username = "xftpfnvt-rotate"
-        self.proxy_password = "yulnmnbiq66j"
-        
-        # ✅ FORMAT ROTATING PROXY ENDPOINT
-        self.proxy_url = f"http://{self.proxy_username}:{self.proxy_password}@{self.proxy_domain}:{self.proxy_port}"
+        # ✅ MODE TEST : PAS DE PROXY
+        self.use_proxy = False
         
         self.driver = None
         self.driver_initialized = False
@@ -63,19 +57,17 @@ class BatchWebsiteFinder:
         self.batch_timeout = 600
         
     def setup_driver_once(self):
-        """Configure le driver Chrome avec Webshare Rotating Proxy"""
+        """Configure le driver Chrome SANS PROXY pour test"""
         if self.driver_initialized:
             return True
             
         try:
-            log_to_n8n("🚀 Initializing Chrome with Webshare rotating proxy...")
+            log_to_n8n("🚀 Initializing Chrome WITHOUT proxy (test mode)...")
             
             options = uc.ChromeOptions()
             
-            # ✅ CONFIGURATION WEBSHARE ROTATING PROXY
-            options.add_argument(f'--proxy-server={self.proxy_url}')
-            log_to_n8n(f"🌐 Using Webshare rotating proxy: {self.proxy_domain}:{self.proxy_port}")
-            log_to_n8n(f"👤 Username: {self.proxy_username}")
+            # ✅ PAS DE PROXY - MODE TEST
+            log_to_n8n("⚠️ PROXY DISABLED - Test mode")
             
             # Options optimisées
             options.add_argument('--no-sandbox')
@@ -94,7 +86,7 @@ class BatchWebsiteFinder:
             
             options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # ✅ CRÉER LE DRIVER
+            # ✅ CRÉER LE DRIVER SANS PROXY
             log_to_n8n("⚙️ Creating Chrome instance...")
             self.driver = uc.Chrome(options=options, version_main=None)
             
@@ -105,17 +97,17 @@ class BatchWebsiteFinder:
             # Anti-détection
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
-            # ✅ TEST DE CONNECTIVITÉ AVEC PROXY
-            log_to_n8n("🧪 Testing proxy connectivity...")
+            # ✅ TEST DE CONNECTIVITÉ DIRECTE
+            log_to_n8n("🧪 Testing direct connectivity...")
             
-            # Test httpbin pour voir l'IP
+            # Test httpbin pour voir l'IP du serveur
             self.driver.get("https://httpbin.org/ip")
             time.sleep(3)
             
             try:
                 body_text = self.driver.find_element(By.TAG_NAME, "body").text
                 if "origin" in body_text:
-                    log_to_n8n(f"✅ Proxy working! IP: {body_text}")
+                    log_to_n8n(f"✅ Direct connection working! Server IP: {body_text}")
                 else:
                     log_to_n8n(f"⚠️ Unexpected response: {body_text}")
             except:
@@ -128,13 +120,13 @@ class BatchWebsiteFinder:
             
             title = self.driver.title
             if "Google" in title:
-                log_to_n8n(f"✅ Google accessible via proxy: {title}")
+                log_to_n8n(f"✅ Google accessible directly: {title}")
                 self.driver_initialized = True
                 
                 self.accept_google_cookies_once()
                 return True
             else:
-                log_to_n8n(f"❌ Unexpected Google response: {title}", "ERROR")
+                log_to_n8n(f"❌ Google not accessible: {title}", "ERROR")
                 return False
                 
         except Exception as e:
@@ -176,7 +168,7 @@ class BatchWebsiteFinder:
             log_to_n8n(f"ℹ️ No cookie popup found")
 
     def search_single_company(self, search_query: str, company_name: str, company_index: int, total_companies: int) -> Dict:
-        """Recherche UNE entreprise avec le driver existant"""
+        """Recherche UNE entreprise SANS PROXY"""
         start_time = time.time()
         result = {
             'search_query': search_query,
@@ -202,7 +194,7 @@ class BatchWebsiteFinder:
                 result.update({
                     'website_url': website_url,
                     'phone': phone,
-                    'source': 'google_maps',
+                    'source': 'google_maps_direct',
                     'found_at': datetime.now().isoformat()
                 })
                 status = f"✅ Found: {website_url or 'No site'}"
@@ -223,15 +215,16 @@ class BatchWebsiteFinder:
             signal.alarm(0)
             result['processing_time'] = round(time.time() - start_time, 2)
             
+            # Délai réduit sans proxy
             if company_index < total_companies - 1:
-                delay = random.uniform(3, 6)
-                log_to_n8n(f"   ⏱️ Waiting {delay:.1f}s for IP rotation...")
+                delay = random.uniform(2, 4)
+                log_to_n8n(f"   ⏱️ Waiting {delay:.1f}s...")
                 time.sleep(delay)
                 
         return result
 
     def search_maps_with_existing_driver(self, search_query: str) -> Tuple[Optional[str], Optional[str]]:
-        """Recherche Maps avec rotation automatique"""
+        """Recherche Maps en mode direct"""
         website_url = None
         phone = None
         
@@ -329,7 +322,7 @@ class BatchWebsiteFinder:
         return bool(re.match(r'^(0[1-9]|\+33[1-9]|33[1-9])\d{8}$', clean_phone))
     
     def process_batch(self, companies_data: list) -> list:
-        """Traite tout le batch avec rotation IP automatique"""
+        """Traite le batch en mode direct (test)"""
         
         signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(self.batch_timeout)
@@ -337,10 +330,10 @@ class BatchWebsiteFinder:
         try:
             total_companies = len(companies_data)
             log_to_n8n(f"🚀 Starting batch: {total_companies} companies")
-            log_to_n8n(f"🔄 Using Webshare rotating proxy (new IP per request)")
+            log_to_n8n(f"⚠️ TEST MODE: No proxy, direct connection only")
             
             if not self.setup_driver_once():
-                raise Exception("Failed to initialize Chrome with Webshare proxy")
+                raise Exception("Failed to initialize Chrome")
             
             results = []
             start_time = time.time()
@@ -369,11 +362,12 @@ class BatchWebsiteFinder:
             with_phone = sum(1 for r in results if r.get('phone'))
             errors = sum(1 for r in results if r.get('error'))
             
-            log_to_n8n(f"📊 BATCH COMPLETE in {batch_time:.1f}s:")
+            log_to_n8n(f"📊 TEST BATCH COMPLETE in {batch_time:.1f}s:")
             log_to_n8n(f"   • {len(results)}/{total_companies} processed")
             log_to_n8n(f"   • {with_website} websites found")
             log_to_n8n(f"   • {with_phone} phones found")
             log_to_n8n(f"   • {errors} errors")
+            log_to_n8n(f"🎯 If this works, the issue is PROXY configuration")
             
             return results
             
@@ -395,11 +389,9 @@ class BatchWebsiteFinder:
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description='Website Finder for n8n')
-    
-    # ✅ MODE n8n : Lire depuis argument ou stdin
-    parser.add_argument('--data', help='JSON data as argument (for n8n)')
-    parser.add_argument('--batch-mode', action='store_true', help='Process batch mode')
+    parser = argparse.ArgumentParser(description='Website Finder - Test Mode (No Proxy)')
+    parser.add_argument('--data', help='JSON data as argument')
+    parser.add_argument('--batch-mode', action='store_true')
     parser.add_argument('--find-websites-only', action='store_true')
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--no-headless', action='store_true')
@@ -409,13 +401,10 @@ def main():
     try:
         log_to_n8n("📥 Reading input data...")
         
-        # ✅ LIRE DONNÉES - De l'argument OU de stdin
         if args.data:
-            # Mode argument (pour éviter les problèmes d'échappement)
             input_data = json.loads(args.data)
             log_to_n8n("📊 Data loaded from argument")
         else:
-            # Mode stdin (ancien)
             input_text = sys.stdin.read().strip()
             if not input_text:
                 log_to_n8n("❌ No input data provided", "ERROR")
@@ -428,13 +417,15 @@ def main():
         
         log_to_n8n(f"📋 Loaded {len(input_data)} companies")
         
+        # ✅ LIMITER À 3 ENTREPRISES POUR TEST
+        input_data = input_data[:3]
+        log_to_n8n(f"🧪 TEST MODE: Limited to {len(input_data)} companies")
+        
         # Créer le finder
         finder = BatchWebsiteFinder(
             debug=args.debug,
             headless=not args.no_headless
         )
-        
-        log_to_n8n("✅ Using configured Webshare rotating proxy")
         
         # Traiter le batch
         results = finder.process_batch(input_data)
