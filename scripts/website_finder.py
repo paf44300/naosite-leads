@@ -265,7 +265,7 @@ class WebsiteFinder:
         
     def extract_phone_from_maps(self, search_query: str) -> Optional[str]:
     
-        try:
+    try:
         search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
         self.driver.get(search_url)
         
