@@ -27,7 +27,7 @@ except ImportError:
     SELENIUM_AVAILABLE = False
 
 class WebsiteFinder:
-    def extract_phone_from_maps(self, search_query: str) -> Optional[str]:
+def extract_phone_from_maps(self, search_query: str) -> Optional[str]:
     """Cherche le téléphone sur Google Maps"""
     try:
         search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
