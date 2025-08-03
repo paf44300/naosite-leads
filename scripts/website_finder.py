@@ -63,8 +63,7 @@ class WebsiteFinderBatch:
         )
         self.logger = logging.getLogger(__name__)
     
-    def setup_driver(self):
-    """Configure Chrome optimisé pour batch processing avec authentification proxy robuste."""
+    def setup_driver(self)
     try:
         if self.test_mode:
             self.logger.info("🧪 TEST MODE: No proxy, direct connection only")
