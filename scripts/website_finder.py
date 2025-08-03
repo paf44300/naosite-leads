@@ -64,77 +64,80 @@ class WebsiteFinderBatch:
         self.logger = logging.getLogger(__name__)
     
     def setup_driver(self):
-        """Configure Chrome optimisé pour batch processing"""
-        try:
-            if self.test_mode:
-                self.logger.info("🧪 TEST MODE: No proxy, direct connection only")
+    """Configure Chrome optimisé pour batch processing avec authentification proxy robuste."""
+    try:
+        if self.test_mode:
+            self.logger.info("🧪 TEST MODE: No proxy, direct connection only")
+        
+        self.logger.info("🚀 Initializing robust Chrome for batch processing...")
+        
+        options = uc.ChromeOptions()
+        
+        # --- Options anti-détection et de stabilité ---
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--window-size=1280,800')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--disable-extensions') # L'extension de proxy sera chargée plus bas
+        options.add_argument('--disable-images')
+        options.add_argument('--lang=fr-FR,fr')
+        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+        
+        # Le mode headless est désactivé car trop détectable.
+        # Pour le faire fonctionner dans un conteneur, un écran virtuel (Xvfb) est nécessaire.
+        
+        # --- Configuration du proxy via une extension (méthode fiable) ---
+        if self.use_proxy and not self.test_mode:
+            self.logger.info("🔗 Configuring Webshare proxy via extension...")
+            import os
+            plugin_path = '/tmp/proxy_auth_plugin'
             
-            self.logger.info("🚀 Initializing Chrome for batch processing...")
+            manifest_json = """
+            { "version": "1.0.0", "manifest_version": 2, "name": "Chrome Proxy", "permissions": ["proxy", "<all_urls>", "webRequest", "webRequestBlocking"], "background": { "scripts": ["background.js"] } }
+            """
+            background_js = f'''
+            var config = {{ mode: "fixed_servers", rules: {{ singleProxy: {{ scheme: "http", host: "{self.proxy_host}", port: parseInt("{self.proxy_port}") }} }} }};
+            chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+            function callbackFn(details) {{ return {{ authCredentials: {{ username: "{self.proxy_user}", password: "{self.proxy_pass}" }} }}; }}
+            chrome.webRequest.onAuthRequired.addListener(callbackFn, {{urls: ["<all_urls>"]}}, ['blocking']);
+            '''
             
-            options = uc.ChromeOptions()
+            if not os.path.exists(plugin_path):
+                os.makedirs(plugin_path)
+            with open(os.path.join(plugin_path, "manifest.json"), "w") as f:
+                f.write(manifest_json)
+            with open(os.path.join(plugin_path, "background.js"), "w") as f:
+                f.write(background_js)
             
-            # Options Docker/Container optimisées
-            options.add_argument('--headless=new')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--disable-software-rasterizer')
-            options.add_argument('--disable-web-security')
-            options.add_argument('--disable-features=TranslateUI,BlinkGenPropertyTrees')
-            options.add_argument('--disable-extensions')
-            options.add_argument('--disable-plugins')
-            options.add_argument('--disable-images')
-            options.add_argument('--disable-javascript')  # Pour économiser des ressources
-            options.add_argument('--disable-background-timer-throttling')
-            options.add_argument('--disable-renderer-backgrounding')
-            options.add_argument('--disable-backgrounding-occluded-windows')
-            
-            # Mémoire et performance
-            options.add_argument('--memory-pressure-off')
-            options.add_argument('--max_old_space_size=2048')
-            options.add_argument('--window-size=1280,720')
-            
-            # Locale française
-            options.add_argument('--lang=fr-FR')
-            options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-            
-            # Configuration proxy
-            if self.use_proxy and not self.test_mode:
-                proxy_string = f"{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}"
-                options.add_argument(f'--proxy-server=http://{proxy_string}')
-                self.logger.info("🔗 Proxy Webshare configured")
-            else:
-                self.logger.info("⚠️ PROXY DISABLED - Direct connection")
-            
-            # Timeouts courts
-            options.add_argument('--timeout=20000')
-            
-            # Préférences
-            prefs = {
-                "profile.managed_default_content_settings.images": 2,
-                "profile.default_content_setting_values.notifications": 2,
-                "profile.default_content_settings.popups": 0
-            }
-            options.add_experimental_option("prefs", prefs)
-            
-            self.logger.info("⚙️ Creating Chrome instance...")
-            
-            self.driver = uc.Chrome(options=options, version_main=None)
-            self.driver.set_page_load_timeout(20)
-            self.driver.implicitly_wait(3)
-            
-            # Test connectivité rapide
-            if not self.test_mode:
-                self.logger.info("🧪 Testing connectivity...")
-                try:
-                    self.driver.get("https://httpbin.org/ip")
-                    time.sleep(1)
-                    ip_info = json.loads(self.driver.find_element(By.TAG_NAME, "pre").text)
-                    self.logger.info(f"✅ Connection working! IP: {ip_info.get('origin')}")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Connection test failed: {e}")
-            
-            return True
+            options.add_argument(f'--load-extension={plugin_path}')
+            self.logger.info(f"Proxy Webshare configured for user: {self.proxy_user}")
+        else:
+            self.logger.info("⚠️ PROXY DISABLED - Direct connection")
+        
+        self.logger.info("⚙️ Creating Chrome instance...")
+        
+        self.driver = uc.Chrome(options=options, version_main=None, use_subprocess=True)
+        self.driver.set_page_load_timeout(30)
+        self.driver.implicitly_wait(5)
+        
+        # Test de connectivité (maintenant qu'il est stable)
+        if not self.test_mode:
+            self.logger.info("🧪 Testing connectivity...")
+            try:
+                self.driver.get("https://httpbin.org/ip")
+                time.sleep(2)
+                ip_info_text = self.driver.find_element(By.TAG_NAME, "pre").text
+                ip_info = json.loads(ip_info_text)
+                self.logger.info(f"✅ Connection working! IP: {ip_info.get('origin')}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Connection test failed (but driver is likely OK): {e}")
+        
+        return True
+        
+    except Exception as e:
+        self.logger.error(f"❌ Driver setup failed: {e}", exc_info=True)
+        return False
             
         except Exception as e:
             self.logger.error(f"❌ Driver setup failed: {e}")
