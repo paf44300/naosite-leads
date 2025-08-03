@@ -1,78 +1,25 @@
-# Configuration Fly.io pour Naosite n8n - Version Validée
-app = 'naosite-leads-mdvmcg'
-primary_region = 'iad'
+
+app = "naosite-leads-mdvmcg"
 
 [build]
-
-[deploy]
-  strategy = "immediate"
+  dockerfile = "Dockerfile"
 
 [env]
-  # N8N Configuration réseau CRITIQUE
-  N8N_HOST = "0.0.0.0"
-  N8N_PORT = "5678"
-  N8N_PROTOCOL = "http"
-  WEBHOOK_URL = "http://0.0.0.0:5678/"
-  N8N_EDITOR_BASE_URL = "https://naosite-leads-mdvmcg.fly.dev"
-  
-  # Configuration Chrome/Display
-  DISPLAY = ":99"
-  CHROME_BIN = "/usr/bin/google-chrome-stable"
-  CHROME_PATH = "/usr/bin/google-chrome-stable"
-  
-  # Performance
-  NODE_OPTIONS = "--max-old-space-size=1024"
-  N8N_LOG_LEVEL = "info"
-  DB_TYPE = "sqlite"
-  EXECUTIONS_MODE = "regular"
-  
-  # Sécurité
-  N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS = "false"
-  
-  # Timezone
-  TZ = "Europe/Paris"
+  # On dit juste à n8n où il est accessible publiquement. C'est tout.
+  WEBHOOK_URL = "https://naosite-leads-mdvmcg.fly.dev"
 
-[http_service]
-  internal_port = 5678
-  force_https = true
-  auto_stop_machines = "off"
-  auto_start_machines = true
-  min_machines_running = 1
-  processes = ["app"]
-
-  [[http_service.checks]]
-    grace_period = "30s"
-    interval = "30s"
-    method = "GET"
-    timeout = "10s"
-    path = "/healthz"
-
-[[vm]]
-  memory = "2gb"
-  cpu_kind = "shared"
-  cpus = 2
-
-[mounts]
-  source = "n8n_data"
+[[mounts]]
+  source      = "n8n_data"
   destination = "/root/.n8n"
-  initial_size = "1gb"
 
-# Configuration service simplifiée (supprime la duplication)
 [[services]]
-  protocol = "tcp"
   internal_port = 5678
-  processes = ["app"]
+  protocol      = "tcp"
 
   [[services.ports]]
-    port = 80
     handlers = ["http"]
-    force_https = true
+    port = 80
 
   [[services.ports]]
+    handlers = ["http","tls"]
     port = 443
-    handlers = ["tls", "http"]
-
-  [services.concurrency]
-    type = "connections"
-    hard_limit = 50
-    soft_limit = 25
