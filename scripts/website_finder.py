@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Website Finder avec logs visibles dans n8n
+Website Finder avec configuration Webshare Rotating Proxy CORRECTE
+Format: http://username:password@p.webshare.io:port
 """
 
 import json
@@ -16,23 +17,9 @@ from urllib.parse import quote_plus
 
 # ✅ FONCTION POUR LOGS VISIBLES DANS N8N
 def log_to_n8n(message, level="INFO"):
-    """Log qui apparaît dans n8n ET dans stderr"""
     timestamp = datetime.now().strftime("%H:%M:%S")
     formatted_message = f"[{timestamp}] {level}: {message}"
-    
-    # Vers stderr pour n8n
     print(formatted_message, file=sys.stderr, flush=True)
-    
-    # Aussi en JSON pour debug
-    log_entry = {
-        "timestamp": timestamp,
-        "level": level,
-        "message": message,
-        "type": "log_entry"
-    }
-    
-    # Note: On évite de print le JSON car ça interfère avec les résultats
-    # print(json.dumps(log_entry, ensure_ascii=False), file=sys.stderr)
 
 try:
     import undetected_chromedriver as uc
@@ -59,11 +46,15 @@ class BatchWebsiteFinder:
         self.debug = debug
         self.headless = headless
         
-        # Configuration proxy Webshare
-        self.proxy_host = "p.webshare.io"
-        self.proxy_port = "80"
-        self.proxy_user = "xftpfnvt"
-        self.proxy_pass = "yulnmnbiq66j"
+        # ✅ CONFIGURATION WEBSHARE ROTATING PROXY
+        # Vous devez remplacer ces valeurs par celles de votre dashboard Webshare
+        self.proxy_domain = "p.webshare.io"      # Domain Name de votre dashboard
+        self.proxy_port = "80"                   # Proxy Port de votre dashboard  
+        self.proxy_username = "xftpfnvt-rotate"    # Proxy Username de votre dashboard
+        self.proxy_password = "yulnmnbiq66j"    # Proxy Password de votre dashboard
+        
+        # ✅ FORMAT ROTATING PROXY ENDPOINT
+        self.proxy_url = f"http://{self.proxy_username}:{self.proxy_password}@{self.proxy_domain}:{self.proxy_port}"
         
         self.driver = None
         self.driver_initialized = False
@@ -73,19 +64,20 @@ class BatchWebsiteFinder:
         self.batch_timeout = 600
         
     def setup_driver_once(self):
-        """Configure le driver Chrome UNE SEULE FOIS"""
+        """Configure le driver Chrome avec Webshare Rotating Proxy"""
         if self.driver_initialized:
             return True
             
         try:
-            log_to_n8n("🚀 Initializing Chrome driver for batch...")
+            log_to_n8n("🚀 Initializing Chrome with Webshare rotating proxy...")
             
             options = uc.ChromeOptions()
             
-            # Configuration proxy
-            proxy_string = f"{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}"
-            options.add_argument(f'--proxy-server=http://{proxy_string}')
-            log_to_n8n(f"🌐 Using proxy: {self.proxy_host}:{self.proxy_port}")
+            # ✅ CONFIGURATION WEBSHARE ROTATING PROXY
+            # Format: --proxy-server=http://username:password@p.webshare.io:port
+            options.add_argument(f'--proxy-server={self.proxy_url}')
+            log_to_n8n(f"🌐 Using Webshare rotating proxy: {self.proxy_domain}:{self.proxy_port}")
+            log_to_n8n(f"👤 Username: {self.proxy_username}")
             
             # Options optimisées
             options.add_argument('--no-sandbox')
@@ -102,9 +94,10 @@ class BatchWebsiteFinder:
             if self.headless:
                 options.add_argument('--headless=new')
             
+            # User agent standard
             options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
-            # Créer le driver
+            # ✅ CRÉER LE DRIVER
             log_to_n8n("⚙️ Creating Chrome instance...")
             self.driver = uc.Chrome(options=options, version_main=None)
             
@@ -115,8 +108,24 @@ class BatchWebsiteFinder:
             # Anti-détection
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
-            # Test de connectivité
-            log_to_n8n("🧪 Testing Google connectivity...")
+            # ✅ TEST DE CONNECTIVITÉ AVEC PROXY
+            log_to_n8n("🧪 Testing proxy connectivity...")
+            
+            # Test 1: Aller sur httpbin pour voir l'IP
+            self.driver.get("https://httpbin.org/ip")
+            time.sleep(3)
+            
+            try:
+                body_text = self.driver.find_element(By.TAG_NAME, "body").text
+                if "origin" in body_text:
+                    log_to_n8n(f"✅ Proxy working! IP: {body_text}")
+                else:
+                    log_to_n8n(f"⚠️ Unexpected response: {body_text}")
+            except:
+                log_to_n8n("⚠️ Could not get IP info")
+            
+            # Test 2: Tester Google France
+            log_to_n8n("🧪 Testing Google France access...")
             self.driver.get("https://www.google.fr")
             time.sleep(2)
             
@@ -125,7 +134,7 @@ class BatchWebsiteFinder:
                 log_to_n8n(f"✅ Google accessible via proxy: {title}")
                 self.driver_initialized = True
                 
-                # Accepter les cookies
+                # Accepter les cookies une fois
                 self.accept_google_cookies_once()
                 return True
             else:
@@ -143,12 +152,13 @@ class BatchWebsiteFinder:
             return False
     
     def accept_google_cookies_once(self):
-        """Accepte les cookies Google"""
+        """Accepte les cookies Google une seule fois"""
         try:
             cookie_selectors = [
                 "//button[contains(text(), 'Tout accepter')]",
                 "//button[contains(text(), 'Accept all')]",
-                "#L2AGLb"
+                "#L2AGLb",
+                ".QS5gu"
             ]
             
             for selector in cookie_selectors:
@@ -172,7 +182,7 @@ class BatchWebsiteFinder:
             log_to_n8n(f"ℹ️ No cookie popup found")
 
     def search_single_company(self, search_query: str, company_name: str, company_index: int, total_companies: int) -> Dict:
-        """Recherche UNE entreprise"""
+        """Recherche UNE entreprise avec le driver existant"""
         start_time = time.time()
         result = {
             'search_query': search_query,
@@ -192,7 +202,8 @@ class BatchWebsiteFinder:
             
             log_to_n8n(f"🔍 ({company_index + 1}/{total_companies}) {company_name}")
             
-            # Recherche Maps
+            # ✅ RECHERCHE MAPS AVEC ROTATION AUTOMATIQUE
+            # Chaque requête utilise automatiquement une IP différente grâce au rotating endpoint
             website_url, phone = self.search_maps_with_existing_driver(search_query)
             
             if website_url or phone:
@@ -220,29 +231,29 @@ class BatchWebsiteFinder:
             signal.alarm(0)
             result['processing_time'] = round(time.time() - start_time, 2)
             
-            # Délai entre recherches
+            # ✅ DÉLAI ENTRE RECHERCHES (important pour rotation)
             if company_index < total_companies - 1:
-                delay = random.uniform(2, 4)
-                log_to_n8n(f"   ⏱️ Waiting {delay:.1f}s...")
+                delay = random.uniform(3, 6)  # Délai plus long pour rotation
+                log_to_n8n(f"   ⏱️ Waiting {delay:.1f}s for IP rotation...")
                 time.sleep(delay)
                 
         return result
 
     def search_maps_with_existing_driver(self, search_query: str) -> Tuple[Optional[str], Optional[str]]:
-        """Recherche Maps avec driver existant"""
+        """Recherche Maps - chaque requête utilise une IP différente automatiquement"""
         website_url = None
         phone = None
         
         try:
             search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
             
-            # Navigation
+            # ✅ NAVIGATION (IP rotation automatique)
             self.driver.get(search_url)
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(3, 5))
             
             # Attendre résultats
             try:
-                WebDriverWait(self.driver, 8).until(
+                WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, '[role="feed"], .section-result'))
                 )
             except TimeoutException:
@@ -251,7 +262,8 @@ class BatchWebsiteFinder:
             # Cliquer premier résultat
             first_result_selectors = [
                 '[role="feed"] a[href*="/maps/place/"]:first-child',
-                'a[href*="/maps/place/"]:first-of-type'
+                'a[href*="/maps/place/"]:first-of-type',
+                '.section-result:first-child a'
             ]
             
             clicked = False
@@ -281,7 +293,7 @@ class BatchWebsiteFinder:
             
             for selector in website_selectors:
                 try:
-                    website_elem = WebDriverWait(self.driver, 3).until(
+                    website_elem = WebDriverWait(self.driver, 4).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                     )
                     href = website_elem.get_attribute('href')
@@ -299,7 +311,7 @@ class BatchWebsiteFinder:
             
             for selector in phone_selectors:
                 try:
-                    phone_elem = WebDriverWait(self.driver, 3).until(
+                    phone_elem = WebDriverWait(self.driver, 4).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                     )
                     
@@ -329,7 +341,7 @@ class BatchWebsiteFinder:
         return bool(re.match(r'^(0[1-9]|\+33[1-9]|33[1-9])\d{8}$', clean_phone))
     
     def process_batch(self, companies_data: list) -> list:
-        """Traite tout le batch"""
+        """Traite tout le batch avec rotation IP automatique"""
         
         signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(self.batch_timeout)
@@ -337,14 +349,15 @@ class BatchWebsiteFinder:
         try:
             total_companies = len(companies_data)
             log_to_n8n(f"🚀 Starting batch: {total_companies} companies")
+            log_to_n8n(f"🔄 Using Webshare rotating proxy (new IP per request)")
             
             if not self.setup_driver_once():
-                raise Exception("Failed to initialize Chrome driver")
+                raise Exception("Failed to initialize Chrome with Webshare proxy")
             
             results = []
             start_time = time.time()
             
-            # Traiter chaque entreprise
+            # Traiter chaque entreprise séquentiellement
             for i, company in enumerate(companies_data):
                 query = company.get('searchQuery', '')
                 company_name = company.get('searchName', 'Unknown')
@@ -396,7 +409,7 @@ class BatchWebsiteFinder:
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description='Website Finder with Enhanced Logging')
+    parser = argparse.ArgumentParser(description='Website Finder with Webshare Rotating Proxy')
     parser.add_argument('--batch-mode', action='store_true')
     parser.add_argument('--find-websites-only', action='store_true')
     parser.add_argument('--debug', action='store_true')
@@ -416,11 +429,18 @@ def main():
             
             log_to_n8n(f"📋 Loaded {len(input_data)} companies")
             
-            # Créer le finder
+            # ✅ CRÉER LE BATCH FINDER AVEC WEBSHARE
             finder = BatchWebsiteFinder(
                 debug=args.debug,
                 headless=not args.no_headless
             )
+            
+            # ✅ VÉRIFIER LA CONFIGURATION PROXY
+            if finder.proxy_username == "YOUR_USERNAME":
+                log_to_n8n("❌ ERROR: Please update proxy credentials in script!", "ERROR")
+                log_to_n8n("   Edit the script and replace YOUR_USERNAME and YOUR_PASSWORD", "ERROR")
+                log_to_n8n("   with your actual Webshare credentials from the dashboard", "ERROR")
+                sys.exit(1)
             
             # Traiter le batch
             results = finder.process_batch(input_data)
