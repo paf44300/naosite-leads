@@ -36,9 +36,9 @@ class RobustWebsiteFinder:
         self.setup_logging()
         
         # Configuration proxy Webshare
-        self.proxy_host = "proxy.webshare.io"
-        self.proxy_port = "8000"
-        self.proxy_user = "xftpfnvt"
+        self.proxy_host = "p.webshare.io"
+        self.proxy_port = "1080"
+        self.proxy_user = "xftpfnvt-rotate"
         self.proxy_pass = "yulnmnbiq66j"
         
         self.driver = None
