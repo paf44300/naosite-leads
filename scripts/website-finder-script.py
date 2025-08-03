@@ -37,8 +37,8 @@ class WebsiteFinder:
         self.setup_logging()
         
         # Configuration proxy Webshare
-        self.proxy_host = "proxy.webshare.io"
-        self.proxy_port = "8000"
+        self.proxy_host = "p.webshare.io"
+        self.proxy_port = "80"
         self.proxy_user = "xftpfnvt"
         self.proxy_pass = "yulnmnbiq66j"
         
