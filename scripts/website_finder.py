@@ -63,7 +63,7 @@ class WebsiteFinderBatch:
         )
         self.logger = logging.getLogger(__name__)
     
-     def setup_driver(self):
+    def setup_driver(self):
         
         try:
             self.logger.info("🚀 Initializing robust Chrome for batch processing...")
