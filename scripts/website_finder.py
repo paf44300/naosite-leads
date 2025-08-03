@@ -262,6 +262,141 @@ class WebsiteFinder:
                 self.driver.quit()
                 
         return result
+    def extract_phone_from_maps(self, search_query: str) -> Optional[str]:
+    """Cherche le téléphone sur Google Maps"""
+    try:
+        search_url = f"https://www.google.com/maps/search/{quote_plus(search_query)}"
+        self.driver.get(search_url)
+        
+        # Attendre le chargement
+        time.sleep(random.uniform(3, 5))
+        
+        # Chercher le premier résultat
+        try:
+            first_result = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, '[role="feed"] a[href*="/maps/place/"]'))
+            )
+            first_result.click()
+            time.sleep(random.uniform(2, 4))
+            
+            # Chercher le téléphone dans les détails
+            phone_selectors = [
+                'button[data-item-id^="phone:tel:"]',
+                '[data-item-id^="phone"] span',
+                '.W4Efsd:nth-child(2) span[jsinstance="*1"]',
+                'span[role="text"]:has-text("02")',  # Numéros français
+                'span[role="text"]:has-text("01")',
+                'span[role="text"]:has-text("03")',
+                'span[role="text"]:has-text("04")',
+                'span[role="text"]:has-text("05")',
+                'span[role="text"]:has-text("06")',
+                'span[role="text"]:has-text("07")',
+                'span[role="text"]:has-text("09")'
+            ]
+            
+            for selector in phone_selectors:
+                try:
+                    phone_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if phone_elem:
+                        phone_text = phone_elem.text.strip()
+                        
+                        # Si pas de texte, essayer l'attribut data
+                        if not phone_text and 'data-item-id' in phone_elem.get_attribute('outerHTML'):
+                            phone_id = phone_elem.get_attribute('data-item-id')
+                            if 'tel:' in phone_id:
+                                phone_text = phone_id.split('tel:')[1]
+                        
+                        # Valider le format français
+                        if phone_text and self.is_valid_french_phone(phone_text):
+                            self.logger.info(f"Found phone on Maps: {phone_text}")
+                            return phone_text
+                except:
+                    continue
+                    
+        except TimeoutException:
+            self.logger.debug("No Maps results found for phone")
+            
+    except Exception as e:
+        self.logger.error(f"Error in Maps phone search: {e}")
+        
+    return None
+
+def is_valid_french_phone(self, phone: str) -> bool:
+    """Valide un numéro de téléphone français"""
+    if not phone:
+        return False
+    
+    # Nettoyer le numéro
+    clean_phone = re.sub(r'[^\d+]', '', phone)
+    
+    # Formats français valides
+    patterns = [
+        r'^0[1-9]\d{8}$',      # 01 23 45 67 89
+        r'^\+33[1-9]\d{8}$',   # +33 1 23 45 67 89
+        r'^33[1-9]\d{8}$',     # 33 1 23 45 67 89
+    ]
+    
+    for pattern in patterns:
+        if re.match(pattern, clean_phone):
+            return True
+    
+    return False
+
+def find_website_and_phone(self, search_query: str) -> Dict:
+    """Fonction principale - trouve le site web ET le téléphone"""
+    result = {
+        'search_query': search_query,
+        'website_url': None,
+        'phone': None,
+        'source': None,
+        'found_at': None,
+        'session_id': self.session_id
+    }
+    
+    if not self.setup_driver():
+        result['error'] = 'Driver setup failed'
+        return result
+    
+    try:
+        self.logger.info(f"Searching website and phone for: {search_query}")
+        
+        # 1. Essayer Google Maps (site web ET téléphone)
+        website_url = self.extract_website_from_maps(search_query)
+        phone = self.extract_phone_from_maps(search_query)
+        
+        if website_url or phone:
+            result.update({
+                'website_url': website_url,
+                'phone': phone,
+                'source': 'google_maps',
+                'found_at': datetime.now().isoformat()
+            })
+            return result
+        
+        # 2. Fallback sur Google Search (site web seulement)
+        website_url = self.extract_website_from_google_search(search_query)
+        if website_url:
+            result.update({
+                'website_url': website_url,
+                'phone': None,
+                'source': 'google_search',
+                'found_at': datetime.now().isoformat()
+            })
+            return result
+        
+        # 3. Pas de site ni téléphone trouvé
+        result['source'] = 'not_found'
+        self.logger.info(f"No website or phone found for: {search_query}")
+        
+    except Exception as e:
+        result['error'] = str(e)
+        self.logger.error(f"Search failed: {e}")
+        
+    finally:
+        if self.driver:
+            self.driver.quit()
+            
+    return result
     
     def generate_fallback_result(self, search_query: str) -> Dict:
         """Génère un résultat de fallback si le scraping échoue"""
@@ -276,87 +411,131 @@ class WebsiteFinder:
 
 def main():
     parser = argparse.ArgumentParser(description='Website Finder for Naosite - Find business websites')
-    parser.add_argument('query', help='Business search query (e.g., "Plomberie Martin Nantes")')
+    
+    # ✅ NOUVEAU: Mode batch pour traiter plusieurs entreprises
+    parser.add_argument('--batch-mode', action='store_true', help='Process multiple companies from stdin JSON')
+    
+    # Arguments classiques (pour compatibilité)
+    parser.add_argument('query', nargs='?', help='Business search query (e.g., "Plomberie Martin Nantes")')
     parser.add_argument('--find-websites-only', action='store_true', help='Only find websites, do not analyze quality')
     parser.add_argument('--session-id', help='Session ID for tracking')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--no-headless', action='store_true', help='Show browser window')
     
-    # ✅ NOUVEAUX PARAMÈTRES pour conserver les données
-    parser.add_argument('--siren', help='SIREN de l\'entreprise')
-    parser.add_argument('--siret', help='SIRET de l\'entreprise')
-    parser.add_argument('--company-name', help='Nom de l\'entreprise')
-    parser.add_argument('--activity', help='Activité de l\'entreprise')
-    parser.add_argument('--city', help='Ville de l\'entreprise')
-    parser.add_argument('--zip-code', help='Code postal')
-    parser.add_argument('--is-ei', action='store_true', help='Est un entrepreneur individuel')
-    parser.add_argument('--batch-number', type=int, help='Numéro de batch')
-    
     args = parser.parse_args()
     
-    try:
-        finder = WebsiteFinder(
-            session_id=args.session_id,
-            debug=args.debug,
-            headless=not args.no_headless
-        )
-        
-        result = finder.find_website(args.query)
-        
-        # ✅ AJOUTER LES DONNÉES INITIALES AU RÉSULTAT
-        enhanced_result = {
-            # Données de recherche de site web
-            'search_query': result['search_query'],
-            'website_url': result.get('website_url'),
-            'source': result.get('source'),
-            'found_at': result.get('found_at'),
-            'session_id': result.get('session_id'),
+    if args.batch_mode:
+        # ✅ MODE BATCH: Lire tous les items depuis stdin
+        try:
+            # Lire toutes les lignes JSON depuis stdin
+            input_data = []
+            for line in sys.stdin:
+                line = line.strip()
+                if line:
+                    try:
+                        item = json.loads(line)
+                        input_data.append(item)
+                    except json.JSONDecodeError:
+                        continue
             
-            # ✅ DONNÉES INITIALES DE L'ENTREPRISE
-            'siren': args.siren,
-            'siret': args.siret,
-            'searchName': args.company_name,
-            'activity': args.activity,
-            'ville': args.city,
-            'codePostal': args.zip_code,
-            'departement': args.zip_code[:2] if args.zip_code else None,
-            'isEI': args.is_ei,
-            'batchNumber': args.batch_number,
-            'searchQuery': args.query,
+            # Traiter chaque entreprise
+            results = []
+            for item in input_data:
+                query = item.get('searchQuery', '')
+                if not query:
+                    continue
+                
+                try:
+                    finder = WebsiteFinder(
+                        session_id=args.session_id,
+                        debug=args.debug,
+                        headless=not args.no_headless
+                    )
+                    
+                    result = finder.find_website(query)
+                    
+                    # Enrichir avec les données de l'item
+                    enhanced_result = {
+                        # Données de recherche
+                        'search_query': result['search_query'],
+                        'website_url': result.get('website_url'),
+                        'source': result.get('source'),
+                        'found_at': result.get('found_at'),
+                        'session_id': result.get('session_id'),
+                        
+                        # ✅ DONNÉES ORIGINALES DE L'ENTREPRISE
+                        'siren': item.get('siren'),
+                        'siret': item.get('siret'),
+                        'searchName': item.get('searchName'),
+                        'activity': item.get('activity'),
+                        'ville': item.get('ville'),
+                        'codePostal': item.get('codePostal'),
+                        'departement': item.get('departement'),
+                        'isEI': item.get('isEI'),
+                        'batchNumber': item.get('batchNumber'),
+                        'searchQuery': query,
+                        
+                        # ✅ ADRESSE COMPLÈTE (NOUVEAU)
+                        'adresseComplete': item.get('adresseComplete'),
+                        
+                        # Données dérivées
+                        'hasWebsite': bool(result.get('website_url')),
+                        'websiteSource': result.get('source', 'not_found')
+                    }
+                    
+                    # Nettoyer les valeurs None
+                    enhanced_result = {k: v for k, v in enhanced_result.items() if v is not None}
+                    
+                    results.append(enhanced_result)
+                    
+                except Exception as e:
+                    # En cas d'erreur, garder les données de base
+                    error_result = {
+                        'search_query': query,
+                        'website_url': None,
+                        'source': 'error',
+                        'error': str(e),
+                        'siren': item.get('siren'),
+                        'searchName': item.get('searchName'),
+                        'hasWebsite': False,
+                        'adresseComplete': item.get('adresseComplete')
+                    }
+                    results.append({k: v for k, v in error_result.items() if v is not None})
             
-            # Données dérivées
-            'hasWebsite': bool(result.get('website_url')),
-            'websiteSource': result.get('source', 'not_found')
-        }
-        
-        # Nettoyer les valeurs None
-        enhanced_result = {k: v for k, v in enhanced_result.items() if v is not None}
-        
-        # Output JSON pour n8n
-        print(json.dumps(enhanced_result, ensure_ascii=False))
-        
-        if args.debug:
-            logging.info(f"Enhanced website finder result: {enhanced_result}")
+            # Output tous les résultats
+            for result in results:
+                print(json.dumps(result, ensure_ascii=False))
+                
+        except Exception as e:
+            print(json.dumps({'error': f'Batch processing failed: {e}'}, ensure_ascii=False))
+            sys.exit(1)
+    
+    else:
+        # ✅ MODE CLASSIQUE: Un seul item (pour compatibilité)
+        if not args.query:
+            print("Error: query required in non-batch mode")
+            sys.exit(1)
             
-    except Exception as e:
-        error_result = {
-            'search_query': args.query,
-            'website_url': None,
-            'source': 'error',
-            'error': str(e),
-            'found_at': datetime.now().isoformat(),
-            # Garder les données même en cas d'erreur
-            'siren': args.siren,
-            'siret': args.siret,
-            'searchName': args.company_name,
-            'hasWebsite': False
-        }
-        # Nettoyer les valeurs None
-        error_result = {k: v for k, v in error_result.items() if v is not None}
-        
-        print(json.dumps(error_result, ensure_ascii=False))
-        logging.error(f"Website finder failed: {e}")
-        sys.exit(1)
+        try:
+            finder = WebsiteFinder(
+                session_id=args.session_id,
+                debug=args.debug,
+                headless=not args.no_headless
+            )
+            
+            result = finder.find_website(args.query)
+            print(json.dumps(result, ensure_ascii=False))
+            
+        except Exception as e:
+            error_result = {
+                'search_query': args.query,
+                'website_url': None,
+                'source': 'error',
+                'error': str(e),
+                'found_at': datetime.now().isoformat()
+            }
+            print(json.dumps(error_result, ensure_ascii=False))
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
