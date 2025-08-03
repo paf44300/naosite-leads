@@ -63,7 +63,7 @@ class WebsiteFinderBatch:
         )
         self.logger = logging.getLogger(__name__)
     
-    def setup_driver(self)
+    def setup_driver(self):
     try:
         if self.test_mode:
             self.logger.info("🧪 TEST MODE: No proxy, direct connection only")
